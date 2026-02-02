@@ -244,6 +244,10 @@ TEXT = {
         LANG_RU: "❌ YouTube просит подтверждение «я не бот». Ҳатто cookies билан ҳам cloud (datacenter IP) капча может появляться. Обновите cookies.txt (из залогиненного браузера) или используйте VPS/Proxy (резидентный IP).",
     },
 "err_generic": {LANG_UZ: "❌ Xatolik: {err}", LANG_RU: "❌ Ошибка: {err}"},
+
+    "err_rate_limited": {LANG_UZ: "⚠️ Juda ko‘p so‘rov yuborildi (429). Biroz kutib qayta urinib ko‘ring.", LANG_RU: "⚠️ Слишком много запросов (429). Подождите и попробуйте снова."},
+    "err_youtube_botcheck": {LANG_UZ: "⚠️ YouTube «bot-check» чиқарди. Cookie (YT_COOKIES_B64) ни тўғри қўйинг ёки прокси/VPS (резидент IP) ишлатинг, кейин линкни қайта юборинг.", LANG_RU: "⚠️ YouTube требует подтверждение (bot-check). Проверьте cookies (YT_COOKIES_B64) или используйте proxy/VPS (резидентный IP), затем отправьте ссылку снова."},
+    "err_format_unavailable": {LANG_UZ: "⚠️ Танланган формат мавжуд эмас ёки форматлар тўлиқ чиқмаяпти. Танлаш ойнасини қайта чиқаринг (линкни қайта юборинг) ёки cookies/proxy ни текширинг.", LANG_RU: "⚠️ Выбранный формат недоступен или список форматов неполный. Снова получите форматы (отправьте ссылку заново) или проверьте cookies/proxy."},
     "not_admin": {LANG_UZ: "❌ Siz admin emassiz.", LANG_RU: "❌ Вы не админ."},
     "usage_broadcast": {
         LANG_UZ: "Ishlatish: /broadcast xabar_matni",
@@ -598,6 +602,37 @@ def _video_total_size_bytes(info: Dict[str, Any], f: Dict[str, Any]) -> int:
         sz += _best_audio_size_bytes(info)
     return sz
 
+
+def _video_bytes_only_est(info: Dict[str, Any], f: Dict[str, Any]) -> int:
+    """Estimate ONLY the video-stream size in bytes. Returns 0 if unknown.
+
+    This is used to avoid showing misleading identical sizes when yt-dlp doesn't
+    provide per-format size/bitrate.
+    """
+    dur = info.get("duration") or f.get("duration")
+    fs = int(f.get("filesize") or 0)
+    if fs > 0:
+        return fs
+    fs2 = int(f.get("filesize_approx") or 0)
+    if fs2 > 0:
+        return fs2
+    kbps = float(f.get("tbr") or f.get("vbr") or 0.0)
+    if kbps <= 0 or not dur:
+        return 0
+    return _estimate_bytes_from_kbps(kbps, dur)
+
+def _video_total_size_bytes_strict(info: Dict[str, Any], f: Dict[str, Any]) -> int:
+    """Estimate total size (video + best audio if needed). Returns 0 if video size is unknown."""
+    v = _video_bytes_only_est(info, f)
+    if v <= 0:
+        return 0
+    total = v
+    if (f.get("acodec") == "none") or not f.get("acodec"):
+        a = _best_audio_size_bytes(info)
+        if a > 0:
+            total += a
+    return total
+
 def _pick_best_thumbnail_url(info: Dict[str, Any]) -> Optional[str]:
     # yt-dlp may provide 'thumbnail' and list 'thumbnails'
     t = info.get("thumbnail")
@@ -640,6 +675,14 @@ def _friendly_ydl_error(e: Exception, lang: str) -> str:
     # 403 Forbidden (ko‘pincha YouTube cloud/IP blok)
     if "http error 403" in s_low or "403 forbidden" in s_low:
         return _t(lang, "yt_403")
+
+    # 429 Too Many Requests (rate limit)
+    if "http error 429" in s_low or "too many requests" in s_low:
+        return _t(lang, "err_rate_limited")
+
+    # Requested format not available
+    if "requested format is not available" in s_low or "use --list-formats" in s_low:
+        return _t(lang, "err_format_unavailable")
 
     if "unsupported url" in s_low:
         return s
@@ -1078,20 +1121,20 @@ def _download_video(url: str, format_id: Optional[str], workdir: str, has_audio:
             h = int(str(format_id).split(":", 1)[1])
         except Exception:
             h = 720
-        ydl_opts["format"] = f"bestvideo*[height<={h}]+bestaudio/best[height<={h}]/bestvideo*+bestaudio/best"
+        ydl_opts["format"] = (f"bestvideo*[height<={h}][ext=mp4]+bestaudio[ext=m4a]/"f"bestvideo*[height<={h}]+bestaudio/"f"best[height<={h}][ext=mp4]/best[height<={h}]")
         return _run_with_opts(ydl_opts)
 
     # 2) Exact itag
     if format_id:
         fid = str(format_id).strip()
         if has_audio is True:
-            ydl_opts["format"] = f"{fid}/bestvideo*+bestaudio/best"
+            # Progressive format (audio+video). Don't silently fall back to another quality.
+            ydl_opts["format"] = f"{fid}"
         else:
-            ydl_opts["format"] = f"{fid}+bestaudio/bestvideo*+bestaudio/best"
-        try:
-            return _run_with_opts(ydl_opts)
-        except Exception:
-            pass
+            # Video-only stream: keep the selected video stream and add the best audio.
+            # Again, no silent fallback to another video quality.
+            ydl_opts["format"] = f"{fid}+bestaudio[ext=m4a]/{fid}+bestaudio"
+        return _run_with_opts(ydl_opts)
 
     # 3) Ultimate fallback
     ydl_opts["format"] = "bestvideo*+bestaudio/best"
@@ -1377,6 +1420,13 @@ async def _task_show_youtube_formats(
     try:
         info = await loop.run_in_executor(None, _extract_info, url)
         formats = _select_youtube_formats(info)
+        try:
+            raw_fmts = info.get("formats") or []
+            heights = sorted({int(f.get("height")) for f in raw_fmts if f.get("vcodec") != "none" and f.get("height")}, reverse=True)
+            log.info("YT formats: total=%d unique_video_heights=%s", len(raw_fmts), heights[:20])
+        except Exception:
+            pass
+
 
         # Agar yt-dlp формат метамаълумотлари тўлиқ келмаса (ёки 1 та форматгина чиқса),
         # UI барибир 144/240/360/480/720/1080 вариантларни кўрсатади.
@@ -1404,8 +1454,16 @@ async def _task_show_youtube_formats(
             ytid = str(info.get("id") or "")
             yt_key = f"yt:{ytid}:{label_h}p" if ytid else None
 
-            total_bytes = _video_total_size_bytes(info, f)
-            size = human_mb_compact(total_bytes)
+            # Size label: avoid misleading identical sizes when per-format size is unknown.
+            fmt_for_size = f
+            if str(fmt_id).startswith("h:"):
+                # For pseudo "height cap" buttons, compute size from the best real format under that cap.
+                best_f = _best_video_format_under_height(info, label_h)
+                if best_f:
+                    fmt_for_size = best_f
+
+            total_bytes = _video_total_size_bytes_strict(info, fmt_for_size)
+            size = human_mb_compact(total_bytes) if total_bytes > 0 else ""
             label = f"{label_h}p - {size}" if size else f"{label_h}p"
 
             token = _cache_put({
