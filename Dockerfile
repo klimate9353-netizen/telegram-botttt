@@ -7,9 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Deno (yt-dlp EJS учун JS runtime)
-ENV NODE_INSTALL=/root/.node
-RUN curl -fsSL https://node.land/install.sh | sh
-ENV PATH="${NODE_INSTALL}/bin:${PATH}"
+ENV DENO_INSTALL=/root/.deno
+RUN curl -fsSL https://deno.land/install.sh | sh
+ENV PATH="${DENO_INSTALL}/bin:${PATH}"
 
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
