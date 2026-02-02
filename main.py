@@ -836,7 +836,7 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
     # YouTube extractor: ba'zan mobile client yumshoqroq ishlaydi
     opts.setdefault("extractor_args", {})
     opts["extractor_args"].setdefault("youtube", {})
-    opts["extractor_args"]["youtube"].setdefault("player_client", ["android", "ios", "web"])
+    opts["extractor_args"]["youtube"].setdefault("player_client", ["web", "android", "ios"])
 
     # HTTP headers (User-Agent / Accept-Language)
     opts.setdefault("http_headers", {})
@@ -1078,23 +1078,23 @@ def _download_video(url: str, format_id: Optional[str], workdir: str, has_audio:
             h = int(str(format_id).split(":", 1)[1])
         except Exception:
             h = 720
-        ydl_opts["format"] = f"bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/best[height<={h}]/best"
+        ydl_opts["format"] = f"bestvideo*[height<={h}]+bestaudio/best[height<={h}]/bestvideo*+bestaudio/best"
         return _run_with_opts(ydl_opts)
 
     # 2) Exact itag
     if format_id:
         fid = str(format_id).strip()
         if has_audio is True:
-            ydl_opts["format"] = f"{fid}/best"
+            ydl_opts["format"] = f"{fid}/bestvideo*+bestaudio/best"
         else:
-            ydl_opts["format"] = f"{fid}+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best"
+            ydl_opts["format"] = f"{fid}+bestaudio/bestvideo*+bestaudio/best"
         try:
             return _run_with_opts(ydl_opts)
         except Exception:
             pass
 
     # 3) Ultimate fallback
-    ydl_opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
+    ydl_opts["format"] = "bestvideo*+bestaudio/best"
     return _run_with_opts(ydl_opts)
 
 
