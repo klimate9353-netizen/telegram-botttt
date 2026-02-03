@@ -881,6 +881,21 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
     opts["extractor_args"].setdefault("youtube", {})
     opts["extractor_args"]["youtube"].setdefault("player_client", ["web", "android", "ios"])
 
+    # HLS (m3u8) manifestlari баъзи тармоқларда manifest.googlevideo.com timeout бериши мумкин.
+    # Шунинг учун (default) HLS'ни ўчириб, DASH форматлар билан ишлаймиз.
+    # Ўчириб қўйиш: YTDLP_SKIP_HLS=0
+    if os.getenv("YTDLP_SKIP_HLS", "1") == "1":
+        ysk = opts["extractor_args"]["youtube"].get("skip")
+        if not ysk:
+            opts["extractor_args"]["youtube"]["skip"] = ["hls"]
+        else:
+            if isinstance(ysk, str):
+                ysk = [ysk]
+            if "hls" not in ysk:
+                ysk.append("hls")
+            opts["extractor_args"]["youtube"]["skip"] = ysk
+
+
     # HTTP headers (User-Agent / Accept-Language)
     opts.setdefault("http_headers", {})
     ua = (os.getenv("YTDLP_UA") or "").strip()
@@ -922,7 +937,9 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
         if ff:
             opts['ffmpeg_location'] = ff
     except Exception:
-        pass    # --- YouTube EJS / JS-challenge (formatlar yo‘qolib qolmasligi uchun) ---
+        pass
+
+    # --- YouTube EJS / JS-challenge (formatlar yo‘qolib qolmasligi учун) ---
     # Ba'zi videolarda YouTube "bot-check" qilib, JS-challenge yechilmasa faqat storyboard (rasmlar) qolib ketadi.
     # Buni yechish uchun JS runtime (deno yoki node) va (kerak bo‘lsa) EJS remote component ruxsati kerak bo‘ladi.
     try:
