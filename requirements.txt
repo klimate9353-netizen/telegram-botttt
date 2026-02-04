@@ -1,4 +1,6 @@
 python-telegram-bot>=20.7
-asyncpg>=0.29
 yt-dlp[default]>=2026.02.04
-python-dotenv>=1.0.0
+asyncpg
+python-dotenv
+gallery-dl
+curl-cffi
