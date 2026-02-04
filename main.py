@@ -236,11 +236,11 @@ TEXT = {
     
     "yt_403": {
         LANG_UZ: "❌ YouTube 403 Forbidden. Bu odatda cloud/datacenter IP blok ёки cookies eskirganidan bo‘ladi. Cookies.txt ni yangilang (login bo‘lgan brauzerdan eksport), yoki Proxy/VPS (rezident IP) ishlating.",
-        LANG_RU: "❌ YouTube 403 Forbidden. Обычно это блокировка cloud/datacenter IP или устаревшие cookies. Обновите cookies.txt (экспорт из залогиненного браузера) или используйте Proxy/VPS (резидентный IP).",
+        LANG_RU: "❌ YouTube 403 Forbidden. Обычно это блокировка cloud/datacenter IP или устаревшие cookies. Самое надежное — резидентный/ISP proxy: задайте YTDLP_PROXY. Дополнительно: обновите cookies.txt (экспорт из залогиненного браузера).",
     },
 
     "yt_botcheck_even_with_cookies": {
-        LANG_UZ: "❌ YouTube «men robot emasman» tekshiruvini so‘radi. Cookies топилган бўлса ҳам cloud/IP блок сабабли baribir captcha chiqishi mumkin. Cookies.txt ni yangilang (login bo‘lgan brauzerdan), yoki VPS/Proxy (rezident IP) ishlating.",
+        LANG_UZ: "❌ YouTube «men robot emasman» tekshiruvini so‘radi. Cookies бўлса ҳам cloud/datacenter IP сабаб captcha чиқиши мумкин. Энг ишончли ечим — rezident/ISP proxy: ботда YTDLP_PROXY ни созланг. Ёки cookies.txt ни янгилаб кўринг (login бўлган браузердан).",
         LANG_RU: "❌ YouTube просит подтверждение «я не бот». Ҳатто cookies билан ҳам cloud (datacenter IP) капча может появляться. Обновите cookies.txt (из залогиненного браузера) или используйте VPS/Proxy (резидентный IP).",
     },
 "err_generic": {LANG_UZ: "❌ Xatolik: {err}", LANG_RU: "❌ Ошибка: {err}"},
@@ -966,6 +966,13 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
             opts["remote_components"] = rc
     except Exception:
         pass
+
+    # Proxy (eng barqaror yechim: rezident/ISP proxy).
+    # ENV: YTDLP_PROXY="socks5h://user:pass@host:port" yoki "http://user:pass@host:port"
+    proxy = (os.getenv("YTDLP_PROXY") or os.getenv("YT_PROXY") or "").strip()
+    if proxy:
+        opts["proxy"] = proxy
+
 
 
     return opts
