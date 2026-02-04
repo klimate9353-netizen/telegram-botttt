@@ -564,32 +564,61 @@ def _best_audio_size_bytes(info: Dict[str, Any]) -> int:
     return _estimate_bytes_from_kbps(kbps, dur)
 
 
+
+def _yt_height(fmt: Dict[str, Any]) -> int:
+    """Best-effort parse of a format's height even when yt-dlp doesn't fill `height`."""
+    try:
+        h = fmt.get("height")
+        if h:
+            return int(h)
+    except Exception:
+        pass
+
+    for k in ("format_note", "resolution", "format"):
+        s = str(fmt.get(k) or "")
+        m = re.search(r"(\d{3,4})p\b", s)
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                pass
+        m = re.search(r"x(\d{3,4})\b", s)
+        if m:
+            try:
+                return int(m.group(1))
+            except Exception:
+                pass
+    return 0
+
+
 def _best_video_format_under_height(info: Dict[str, Any], hmax: int) -> Optional[Dict[str, Any]]:
-    """YouTube форматларидан height<=hmax бўлган энг яхши видео форматни топади (аудиосиз видео стримлар)."""
     formats = info.get("formats") or []
     vids: List[Dict[str, Any]] = []
     for f in formats:
-        try:
-            if f.get("vcodec") == "none":
-                continue
-            h = int(f.get("height") or 0)
-            if h <= 0 or h > hmax:
-                continue
-            vids.append(f)
-        except Exception:
+        if f.get("vcodec") == "none":
             continue
+        h = _yt_height(f)
+        if h <= 0 or h > hmax:
+            continue
+        ff = f
+        ff["_h"] = h
+        vids.append(ff)
+
     if not vids:
         return None
 
-    def score(v: Dict[str, Any]):
-        ext = (v.get("ext") or "").lower()
+    def score(ff: Dict[str, Any]):
+        ext = (ff.get("ext") or "").lower()
         ext_score = 2 if ext == "mp4" else (1 if ext in ("webm", "mkv") else 0)
-        tbr = float(v.get("tbr") or 0.0)
-        vbr = float(v.get("vbr") or 0.0)
-        h = int(v.get("height") or 0)
-        return (ext_score, h, max(tbr, vbr))
+        h = int(ff.get("_h") or _yt_height(ff) or 0)
+        br = max(float(ff.get("tbr") or 0), float(ff.get("vbr") or 0), float(ff.get("abr") or 0))
+        fs = float(ff.get("filesize") or 0) + float(ff.get("filesize_approx") or 0)
+        has_url = 1 if ff.get("url") else 0
+        return (has_url, ext_score, h, br, fs)
 
-    return sorted(vids, key=score, reverse=True)[0]
+    return max(vids, key=score)
+
+
 
 def _video_total_size_bytes(info: Dict[str, Any], f: Dict[str, Any]) -> int:
     dur = info.get("duration")
@@ -1038,88 +1067,99 @@ def _extract_info(url: str) -> Dict[str, Any]:
                 return ydl.extract_info(url, download=False)
         raise
 
-def _select_youtube_formats(info: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Return a small curated list of YouTube video formats for buttons.
 
-    We show ONLY these labels (if available): 144/240/360/480/720.
-    Important: some videos have "almost" heights (e.g. 358 instead of 360),
-    so we pick the best format within a tolerance band below each target and
-    store the target label in f["_label_h"].
+def _select_youtube_formats(info: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Pick a curated set of real, available video formats (no fake 1080/720 labels).
+
+    We only show a resolution button if we can map it to an actual format height.
+    This prevents the UI bug where multiple buttons show the same size (because they
+    all fall back to the same single available stream).
     """
     formats = info.get("formats") or []
-    vids = [f for f in formats if f.get("vcodec") != "none" and f.get("height")]
+    duration = float(info.get("duration") or 0)
 
-    # group by height
-    by_h: Dict[int, List[Dict[str, Any]]] = {}
-    for f in vids:
-        try:
-            h = int(f.get("height"))
-        except Exception:
+    vids: List[Dict[str, Any]] = []
+    for f in formats:
+        if f.get("vcodec") == "none":
             continue
-        by_h.setdefault(h, []).append(f)
+        h = _yt_height(f)
+        if h <= 0:
+            continue
+        ff = f
+        ff["_h"] = h
+        # Ensure bitrate hints exist where possible (helps estimation)
+        if ff.get("tbr") is None:
+            # If only vbr/abr exist, keep as-is; otherwise leave None
+            pass
+        vids.append(ff)
+
+    if not vids:
+        return []
+
+    # Pick the best representative for each height
+    def fmt_score(ff: Dict[str, Any]):
+        ext = (ff.get("ext") or "").lower()
+        ext_score = 2 if ext == "mp4" else (1 if ext in ("webm", "mkv") else 0)
+        br = max(float(ff.get("tbr") or 0), float(ff.get("vbr") or 0), float(ff.get("abr") or 0))
+        fs = float(ff.get("filesize") or 0) + float(ff.get("filesize_approx") or 0)
+        has_url = 1 if ff.get("url") else 0
+        # Prefer formats that have a URL, then mp4, then higher bitrate/size.
+        return (has_url, ext_score, br, fs)
+
+    by_h: Dict[int, Dict[str, Any]] = {}
+    for f in vids:
+        h = int(f.get("_h") or 0)
+        best = by_h.get(h)
+        if best is None or fmt_score(f) > fmt_score(best):
+            by_h[h] = f
 
     desired = [144, 240, 360, 480, 720, 1080]
-    # allow slight deviations (some uploads are 358/478/etc.)
-    tol_map = {144: 40, 240: 50, 360: 60, 480: 80, 720: 140}
-
-    def score(x: Dict[str, Any]) -> Tuple[int, float, int]:
-        # prefer mp4, then higher bitrate, then known filesize
-        ext = (x.get("ext") or "").lower()
-        ext_score = 2 if ext == "mp4" else (1 if ext in ("mkv", "webm") else 0)
-        tbr = float(x.get("tbr") or 0.0)
-        fs = int(x.get("filesize") or x.get("filesize_approx") or 0)
-        return (ext_score, tbr, fs)
+    tol = {144: 60, 240: 80, 360: 90, 480: 110, 720: 160, 1080: 220}
 
     picked: List[Dict[str, Any]] = []
-    used_ids: set[str] = set()
+    used_ids: set = set()
 
-    all_heights = sorted(by_h.keys())
+    heights = sorted(by_h.keys())
+
+    def pick_near(target: int) -> Optional[int]:
+        if not heights:
+            return None
+        band = tol.get(target, 120)
+        cands = [h for h in heights if abs(h - target) <= band]
+        if not cands:
+            return None
+        # Closest height wins; tie -> higher resolution
+        cands.sort(key=lambda h: (abs(h - target), -h))
+        return cands[0]
 
     for target in desired:
-        tol = tol_map.get(target, 60)
-        lo = max(0, target - tol)
-        hi = target
-
-        # pick candidate heights within [lo, hi]
-        hs = [h for h in all_heights if lo <= h <= hi]
-        if not hs:
-            # as a fallback, pick the closest lower-or-equal height
-            hs = [h for h in all_heights if h <= target]
-        if not hs:
+        h = pick_near(target)
+        if h is None:
             continue
-
-        # choose the height closest to target (prefer higher), then best score within that height
-        best_h = sorted(hs, key=lambda h: (h, -abs(target - h)), reverse=True)[0]
-        cand = by_h.get(best_h) or []
-        if not cand:
-            continue
-        best = sorted(cand, key=score, reverse=True)[0]
-
-        fid = str(best.get("format_id") or "")
+        f = by_h[h]
+        fid = str(f.get("format_id") or "")
         if not fid or fid in used_ids:
             continue
         used_ids.add(fid)
+        f["_label_h"] = h
+        picked.append(f)
 
-        # store label height for UI
-        best["_label_h"] = target
-        picked.append(best)
-
-    # absolute fallback: show up to 3 best formats up to 720p
+    # If nothing matched the standard buckets, fall back to top few real heights
     if not picked:
-        vids_sorted = sorted(
-            [v for v in vids if int(v.get("height") or 0) <= 720],
-            key=lambda x: float(x.get("tbr") or 0.0),
-            reverse=True,
-        )[:3]
-        for v in vids_sorted:
-            try:
-                v["_label_h"] = int(v.get("height") or 0)
-            except Exception:
-                v["_label_h"] = 0
-        picked = vids_sorted
+        top_heights = sorted(heights, reverse=True)[:4]
+        for h in top_heights:
+            f = by_h[h]
+            fid = str(f.get("format_id") or "")
+            if not fid or fid in used_ids:
+                continue
+            used_ids.add(fid)
+            f["_label_h"] = h
+            picked.append(f)
 
+    # Sort descending by label height for nicer UI (1080 → 144)
+    picked.sort(key=lambda f: int(f.get("_label_h") or f.get("_h") or 0), reverse=True)
     return picked
+
 
 
 def _download_video(url: str, format_id: Optional[str], workdir: str, has_audio: Optional[bool] = None) -> Path:
@@ -1491,23 +1531,14 @@ async def _task_show_youtube_formats(
         # UI барибир 144/240/360/480/720/1080 вариантларни кўрсатади.
         # Бу вариантлар "h:XXX" pseudo format бўлиб, юклаш пайтида height cap сифатида ишлатилади.
         # Лекин ҳажмни кўрсатиш учун real форматдан (height<=cap) битрейт/хажмни тахмин қиламиз.
-        if not formats or len(formats) < 2:
-            formats = []
-            for h in (144, 240, 360, 480, 720, 1080):
-                best = _best_video_format_under_height(info, h)
-                pseudo: Dict[str, Any] = {"format_id": f"h:{h}", "height": h, "_label_h": h, "acodec": "none"}
-                if best:
-                    pseudo["tbr"] = best.get("tbr") or best.get("vbr") or 0.0
-                    pseudo["filesize"] = best.get("filesize") or 0
-                    pseudo["filesize_approx"] = best.get("filesize_approx") or 0
-                formats.append(pseudo)
+                # NOTE: only show real formats discovered by yt-dlp (no pseudo h:XXX options).
 
-        # Buttonlar: faqat 144/240/360/480/720 (mavjud bo‘lsa)
+# Buttonlar: real formatlar (mavjud bo‘lsa)
         btns: List[InlineKeyboardButton] = []
-        for f in sorted(formats, key=lambda x: int(x.get("height") or 0), reverse=True):
+        for f in sorted(formats, key=lambda x: int(x.get("_label_h") or x.get("_h") or x.get("height") or 0), reverse=True):
             fmt_id = str(f.get("format_id"))
-            h = int(f.get("height") or 0)
-            label_h = int(f.get("_label_h") or h)
+            h = int(f.get("_label_h") or f.get("_h") or f.get("height") or 0)
+            label_h = h
 
             has_audio = str(f.get("acodec") or "").lower() not in ("", "none")
             ytid = str(info.get("id") or "")
