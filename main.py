@@ -246,6 +246,7 @@ TEXT = {
 "err_generic": {LANG_UZ: "❌ Xatolik: {err}", LANG_RU: "❌ Ошибка: {err}"},
 
     "err_rate_limited": {LANG_UZ: "⚠️ Juda ko‘p so‘rov yuborildi (429). Biroz kutib qayta urinib ko‘ring.", LANG_RU: "⚠️ Слишком много запросов (429). Подождите и попробуйте снова."},
+    "err_youtube_botcheck": {LANG_UZ: "⚠️ YouTube «bot-check» чиқарди. Cookie (YT_COOKIES_B64) ни тўғри қўйинг ёки прокси/VPS (резидент IP) ишлатинг, кейин линкни қайта юборинг.", LANG_RU: "⚠️ YouTube требует подтверждение (bot-check). Проверьте cookies (YT_COOKIES_B64) или используйте proxy/VPS (резидентный IP), затем отправьте ссылку снова."},
     "err_format_unavailable": {LANG_UZ: "⚠️ Танланган формат мавжуд эмас ёки форматлар тўлиқ чиқмаяпти. Танлаш ойнасини қайта чиқаринг (линкни қайта юборинг) ёки cookies/proxy ни текширинг.", LANG_RU: "⚠️ Выбранный формат недоступен или список форматов неполный. Снова получите форматы (отправьте ссылку заново) или проверьте cookies/proxy."},
     "not_admin": {LANG_UZ: "❌ Siz admin emassiz.", LANG_RU: "❌ Вы не админ."},
     "usage_broadcast": {
@@ -667,6 +668,7 @@ def _friendly_ydl_error(e: Exception, lang: str) -> str:
     # YouTube bot-check patterns
     if "sign in to confirm you’re not a bot" in s_low or "confirm you’re not a bot" in s_low:
         # Cookies bor-yo‘qligini taxmin qilamiz
+        if (os.getenv("YT_COOKIES_FILE") or os.getenv("YT_COOKIES_URL") or os.getenv("YT_COOKIES_TEXT")):
             return _t(lang, "yt_botcheck_even_with_cookies")
         return _t(lang, "yt_need_cookies")
 
@@ -709,31 +711,14 @@ def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
     So we create a fresh temp file per call.
 
     Sources:
-    - YT_COOKIES_FILE: path to cookies.txt (e.g. /etc/secrets/cookies.txt)
+- YT_COOKIES_URL: direct URL to cookies.txt (raw text)
+        - YT_COOKIES_FILE: path to cookies.txt (e.g. /etc/secrets/cookies.txt or /app/cookies_youtube.txt)
+- YT_COOKIES_TEXT: (optional) cookies.txt content as multiline env; will be written to temp file
     """
     def _dst_path() -> str:
         base_dir = workdir if workdir else tempfile.gettempdir()
         os.makedirs(base_dir, exist_ok=True)
         return os.path.join(base_dir, f"yt_cookies_{uuid.uuid4().hex}.txt")
-
-    def _prepare_yt_cookies_file() -> str | None:
-    """Prepare a temp cookies.txt for yt-dlp.
-
-    Supported:
-      - YT_COOKIES_FILE: path to cookies.txt (Netscape format). On Railway, easiest is to keep it in repo
-        or mount it to /etc/secrets and point this var to it.
-      - YT_COOKIES_URL: direct https link to cookies.txt (recommended). We'll download to /tmp each start.
-
-    Removed:
-    """
-    import shutil
-    import tempfile
-    import urllib.request
-
-    def _dst_path() -> str:
-        fd, path = tempfile.mkstemp(prefix="yt_cookies_", suffix=".txt")
-        os.close(fd)
-        return path
 
     def _warn_if_suspicious(path: str) -> None:
         try:
@@ -743,7 +728,6 @@ def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
                 return
             with open(path, "rb") as f:
                 head = f.read(256)
-            # try to detect Netscape header in a tolerant way
             head_txt = head.decode("utf-8", errors="ignore").strip()
             if head_txt and ("Netscape" not in head_txt) and ("# HTTP Cookie File" not in head_txt):
                 log.warning("YT cookies file may be in a non-Netscape format: %s", path)
@@ -754,6 +738,7 @@ def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
     url = (os.getenv("YT_COOKIES_URL") or "").strip()
     if url:
         try:
+            import urllib.request
             tmp_path = _dst_path()
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as resp, open(tmp_path, "wb") as f:
@@ -764,38 +749,54 @@ def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
         except Exception as e:
             log.warning("YT_COOKIES_URL yuklab olish xatosi: %s", e)
 
-    # 2) File path variant
-    src_path = (os.getenv("YT_COOKIES_FILE") or "").strip()
-    candidates: list[str] = []
-    if src_path:
-        candidates.append(src_path)
-        candidates.append(os.path.join("/etc/secrets", os.path.basename(src_path)))
-        candidates.append(os.path.basename(src_path))
-    candidates += ["/etc/secrets/cookies.txt", "/etc/secrets/Cookies.txt", "cookies.txt", "Cookies.txt", "cookies_youtube.txt"]
+    # 2) Plain-text env variant (optional)
+    txt = os.getenv("YT_COOKIES_TEXT")
+    if txt:
+        try:
+            tmp_path = _dst_path()
+            # Preserve exact newlines
+            with open(tmp_path, "wb") as f:
+                f.write(txt.replace("\r\n", "\n").encode("utf-8", errors="replace"))
+            _warn_if_suspicious(tmp_path)
+            log.info("YT cookies (text) tayyor: %s (exists=%s, size=%s)", tmp_path, os.path.exists(tmp_path), os.path.getsize(tmp_path))
+            return tmp_path
+        except Exception as e:
+            log.warning("YT_COOKIES_TEXT write xatosi: %s", e)
 
-    found = None
+    # 3) File path variant
+    src = (os.getenv("YT_COOKIES_FILE") or "").strip()
+    candidates: list[str] = []
+    if src:
+        candidates.append(src)
+        candidates.append(os.path.join("/etc/secrets", os.path.basename(src)))
+        candidates.append(os.path.basename(src))
+    candidates += ["/etc/secrets/cookies.txt", "/etc/secrets/Cookies.txt", "/etc/secrets/cookies_youtube.txt", "cookies.txt", "Cookies.txt", "cookies_youtube.txt"]
+
+    src_path = None
     for p in candidates:
         try:
             if p and os.path.exists(p) and os.path.getsize(p) > 0:
-                found = p
+                src_path = p
                 break
         except Exception:
             continue
 
-    if not found:
-        if src_path:
-            log.warning("YT_COOKIES_FILE topildi, lekin fayl yo'q: %s", src_path)
+    if not src_path:
+        if src:
+            log.warning("YT_COOKIES_FILE topildi, lekin fayl yo'q: %s", src)
         return None
 
     try:
         tmp_path = _dst_path()
-        shutil.copyfile(found, tmp_path)
+        shutil.copyfile(src_path, tmp_path)
         _warn_if_suspicious(tmp_path)
-        log.info("YT cookies (file) tayyor: %s (exists=%s, size=%s, src=%s)", tmp_path, os.path.exists(tmp_path), os.path.getsize(tmp_path), found)
+        log.info("YT cookies (file) tayyor: %s (exists=%s, size=%s, src=%s)", tmp_path, os.path.exists(tmp_path), os.path.getsize(tmp_path), src_path)
         return tmp_path
     except Exception as e:
         log.warning("YT cookies copy xatosi: %s", e)
         return None
+
+
 
 def _normalize_proxy(raw: str) -> Optional[str]:
     """Validate and normalize proxy string from env.
