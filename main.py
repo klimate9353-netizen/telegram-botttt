@@ -941,6 +941,22 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
         "http_chunk_size": 10 * 1024 * 1024,
     }
 
+    # Env overrides (Railway/Render)
+    try:
+        st = int(os.getenv("YTDLP_SOCKET_TIMEOUT", "") or 0)
+        if st > 0:
+            opts["socket_timeout"] = st
+    except Exception:
+        pass
+    try:
+        rt = int(os.getenv("YTDLP_RETRIES", "") or 0)
+        if rt > 0:
+            opts["retries"] = rt
+            opts["fragment_retries"] = rt
+            opts["extractor_retries"] = max(1, rt // 3)
+    except Exception:
+        pass
+
 
     # Cookies (YouTube datacenter bloklari uchun foydali)
     cookiefile = _ensure_cookiefile(workdir)
@@ -950,12 +966,19 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
     # YouTube extractor: ba'zan mobile client yumshoqroq ishlaydi
     opts.setdefault("extractor_args", {})
     opts["extractor_args"].setdefault("youtube", {})
-    opts["extractor_args"]["youtube"].setdefault("player_client", ["web", "android", "ios"])
-
+    # YouTube extractor: datacenter IP'ларда "web" client ko'pincha SABR/PO token sabab URL bermaydi.
+    # Shuning uchun default: android -> ios -> web. Istasangiz env билан бошқарасиз:
+    #   YTDLP_YT_CLIENTS=android,ios,web  (ёки: android)
+    clients_env = (os.getenv("YTDLP_YT_CLIENTS") or "").strip()
+    if clients_env:
+        clients = [c.strip() for c in re.split(r"[,\s]+", clients_env) if c.strip()]
+    else:
+        clients = ["android", "ios", "web"]
+    opts["extractor_args"]["youtube"].setdefault("player_client", clients)
     # HLS (m3u8) manifestlari баъзи тармоқларда manifest.googlevideo.com timeout бериши мумкин.
     # Шунинг учун (default) HLS'ни ўчириб, DASH форматлар билан ишлаймиз.
     # Ўчириб қўйиш: YTDLP_SKIP_HLS=0
-    if os.getenv("YTDLP_SKIP_HLS", "1") == "1":
+    if os.getenv("YTDLP_SKIP_HLS", "0") == "1":
         ysk = opts["extractor_args"]["youtube"].get("skip")
         if not ysk:
             opts["extractor_args"]["youtube"]["skip"] = ["hls"]
@@ -1051,12 +1074,25 @@ def _extract_info(url: str) -> Dict[str, Any]:
     try:
         ydl_opts.setdefault("extractor_args", {})
         ydl_opts["extractor_args"].setdefault("youtube", {})
-        ydl_opts["extractor_args"]["youtube"]["player_client"] = ["web", "android", "ios"]
+        clients_env = (os.getenv("YTDLP_YT_CLIENTS") or "").strip()
+        if clients_env:
+            clients = [c.strip() for c in re.split(r"[,\s]+", clients_env) if c.strip()]
+        else:
+            clients = ["android", "ios", "web"]
+        ydl_opts["extractor_args"]["youtube"]["player_client"] = clients
     except Exception:
         pass
     try:
         with YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(url, download=False)
+            info = ydl.extract_info(url, download=False)
+            if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1":
+                try:
+                    fs = info.get("formats") or []
+                    hs = sorted({int(_yt_height(f) or 0) for f in fs if int(_yt_height(f) or 0) > 0})
+                    log.info("YT formats debug: total=%s heights=%s", len(fs), hs[:25])
+                except Exception:
+                    pass
+            return info
     except Exception as e:
         msg = str(e)
         if "Impersonate target" in msg and "not available" in msg:
