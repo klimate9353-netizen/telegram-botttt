@@ -710,10 +710,14 @@ def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
     yt-dlp may update cookies on exit, and parallel runs can corrupt a shared file.
     So we create a fresh temp file per call.
 
-    Sources:
-- YT_COOKIES_URL: direct URL to cookies.txt (raw text)
-        - YT_COOKIES_FILE: path to cookies.txt (e.g. /etc/secrets/cookies.txt or /app/cookies_youtube.txt)
-- YT_COOKIES_TEXT: (optional) cookies.txt content as multiline env; will be written to temp file
+    Sources (priority order):
+      - YT_COOKIES_URL: direct https URL to cookies.txt (raw text)
+      - YT_COOKIES_TEXT: cookies.txt content as multiline env (recommended if you don't want files)
+      - YT_COOKIES_FILE: path to cookies.txt (e.g. /etc/secrets/cookies.txt or /app/cookies_youtube.txt)
+
+    Notes:
+      - yt-dlp expects the cookies file in Netscape format and UTF-8 text.
+      - If the source is not UTF-8 (e.g., Windows-1251), we transparently re-encode to UTF-8.
     """
     def _dst_path() -> str:
         base_dir = workdir if workdir else tempfile.gettempdir()
@@ -734,43 +738,73 @@ def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
         except Exception:
             pass
 
-    # 1) URL variant (recommended)
+    def _write_utf8_text(dst: str, content: str) -> None:
+        # Normalize newlines and ensure UTF-8 text on disk
+        content = content.replace("\r\n", "\n").replace("\r", "\n")
+        with open(dst, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
+
+    def _write_bytes_as_utf8(dst: str, data: bytes) -> None:
+        # Try common encodings first (Railway/Linux expects UTF-8, but Windows exports can be cp1251/utf-16)
+        for enc in ("utf-8", "utf-16", "utf-16le", "utf-16be", "cp1251", "latin-1"):
+            try:
+                txt = data.decode(enc)
+                # Skip obviously wrong decodes that produce lots of NULLs
+                if txt.count("\x00") > 10:
+                    continue
+                _write_utf8_text(dst, txt)
+                return
+            except Exception:
+                continue
+        # Fallback: replace undecodable bytes
+        _write_utf8_text(dst, data.decode("utf-8", errors="replace"))
+
+    # 1) URL variant
     url = (os.getenv("YT_COOKIES_URL") or "").strip()
     if url:
         try:
             import urllib.request
             tmp_path = _dst_path()
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=30) as resp, open(tmp_path, "wb") as f:
-                f.write(resp.read())
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+            _write_bytes_as_utf8(tmp_path, data)
             _warn_if_suspicious(tmp_path)
             log.info("YT cookies (url) tayyor: %s (exists=%s, size=%s)", tmp_path, os.path.exists(tmp_path), os.path.getsize(tmp_path))
             return tmp_path
         except Exception as e:
             log.warning("YT_COOKIES_URL yuklab olish xatosi: %s", e)
 
-    # 2) Plain-text env variant (optional)
+    # 2) Plain-text env variant (recommended for Railway Variables)
     txt = os.getenv("YT_COOKIES_TEXT")
     if txt:
         try:
             tmp_path = _dst_path()
-            # Preserve exact newlines
-            with open(tmp_path, "wb") as f:
-                f.write(txt.replace("\r\n", "\n").encode("utf-8", errors="replace"))
+            # If UI stored literal "\n" characters, convert them to real newlines
+            if "\\n" in txt and "\n" not in txt:
+                txt = txt.replace("\\r\\n", "\n").replace("\\n", "\n")
+            _write_utf8_text(tmp_path, txt)
             _warn_if_suspicious(tmp_path)
             log.info("YT cookies (text) tayyor: %s (exists=%s, size=%s)", tmp_path, os.path.exists(tmp_path), os.path.getsize(tmp_path))
             return tmp_path
         except Exception as e:
             log.warning("YT_COOKIES_TEXT write xatosi: %s", e)
 
-    # 3) File path variant
+    # 3) File path variant (optional)
     src = (os.getenv("YT_COOKIES_FILE") or "").strip()
     candidates: list[str] = []
     if src:
         candidates.append(src)
         candidates.append(os.path.join("/etc/secrets", os.path.basename(src)))
         candidates.append(os.path.basename(src))
-    candidates += ["/etc/secrets/cookies.txt", "/etc/secrets/Cookies.txt", "/etc/secrets/cookies_youtube.txt", "cookies.txt", "Cookies.txt", "cookies_youtube.txt"]
+    candidates += [
+        "/etc/secrets/cookies.txt",
+        "/etc/secrets/Cookies.txt",
+        "/etc/secrets/cookies_youtube.txt",
+        "cookies.txt",
+        "Cookies.txt",
+        "cookies_youtube.txt",
+    ]
 
     src_path = None
     for p in candidates:
@@ -788,12 +822,14 @@ def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
 
     try:
         tmp_path = _dst_path()
-        shutil.copyfile(src_path, tmp_path)
+        with open(src_path, "rb") as f:
+            data = f.read()
+        _write_bytes_as_utf8(tmp_path, data)
         _warn_if_suspicious(tmp_path)
         log.info("YT cookies (file) tayyor: %s (exists=%s, size=%s, src=%s)", tmp_path, os.path.exists(tmp_path), os.path.getsize(tmp_path), src_path)
         return tmp_path
     except Exception as e:
-        log.warning("YT cookies copy xatosi: %s", e)
+        log.warning("YT cookies read/copy xatosi: %s", e)
         return None
 
 
