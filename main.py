@@ -606,7 +606,7 @@ def _video_total_size_bytes(info: Dict[str, Any], f: Dict[str, Any]) -> int:
 def _video_bytes_only_est(info: Dict[str, Any], f: Dict[str, Any]) -> int:
     """Estimate ONLY the video-stream size in bytes. Returns 0 if unknown.
 
-    This is used to avoid showing misleading identical sizes when yt-dlp doesn't
+    This is used to avoid showing misleading identical sizes when yt_dlp doesn't
     provide per-format size/bitrate.
     """
     dur = info.get("duration") or f.get("duration")
@@ -634,7 +634,7 @@ def _video_total_size_bytes_strict(info: Dict[str, Any], f: Dict[str, Any]) -> i
     return total
 
 def _pick_best_thumbnail_url(info: Dict[str, Any]) -> Optional[str]:
-    # yt-dlp may provide 'thumbnail' and list 'thumbnails'
+    # yt_dlp may provide 'thumbnail' and list 'thumbnails'
     t = info.get("thumbnail")
     if t:
         return t
@@ -661,7 +661,7 @@ def _cache_get(token: str) -> Optional[Dict[str, Any]]:
 
 
 def _friendly_ydl_error(e: Exception, lang: str) -> str:
-    """Minimal, user-friendly error text for logs from yt-dlp / download."""
+    """Minimal, user-friendly error text for logs from yt_dlp / download."""
     s = str(e)
     s_low = s.lower()
 
@@ -698,16 +698,16 @@ def _friendly_ydl_error(e: Exception, lang: str) -> str:
 
 
 
-# ---------------------------- yt-dlp cookies helpers ----------------------------
+# ---------------------------- yt_dlp cookies helpers ----------------------------
 
 _COOKIEFILE_PATH: Optional[str] = None
 _COOKIE_LOGGED: bool = False
 
 def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
-    """Prepare a **writable** cookies.txt for yt-dlp and return its path.
+    """Prepare a **writable** cookies.txt for yt_dlp and return its path.
 
     Important: do NOT reuse the same temp cookies path across concurrent requests.
-    yt-dlp may update cookies on exit, and parallel runs can corrupt a shared file.
+    yt_dlp may update cookies on exit, and parallel runs can corrupt a shared file.
     So we create a fresh temp file per call.
 
     Sources:
@@ -824,9 +824,9 @@ def _normalize_proxy(raw: str) -> Optional[str]:
     return p
 
 def _parse_js_runtimes_env(value: str) -> Dict[str, Dict[str, Any]]:
-    """Parse YTDLP_JS_RUNTIME env into yt-dlp Python API format.
+    """Parse YTDLP_JS_RUNTIME env into yt_dlp Python API format.
 
-    yt-dlp (2026+) expects: dict of {runtime: {config}}
+    yt_dlp (2026+) expects: dict of {runtime: {config}}
     Examples:
       - "deno" -> {"deno": {}}
       - "node" -> {"node": {}}
@@ -912,7 +912,7 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
 
 
     # Impersonate (ixtiyoriy): YTDLP_IMPERSONATE=chrome|chrome-124:windows-10|safari|...
-    # Yangi yt-dlp (2026+) Python API'da opts["impersonate"] satri endi str emas, ImpersonateTarget bo‘lishi kerak.
+    # Yangi yt_dlp (2026+) Python API'da opts["impersonate"] satri endi str emas, ImpersonateTarget bo‘lishi kerak.
     imp = (os.getenv("YTDLP_IMPERSONATE") or "").strip()
     if imp:
         try:
@@ -1088,7 +1088,7 @@ def _select_youtube_formats(info: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _download_video(url: str, format_id: Optional[str], workdir: str, has_audio: Optional[bool] = None) -> Path:
-    """yt-dlp орқали видеони юклаб олиш.
+    """yt_dlp орқали видеони юклаб олиш.
 
     format_id:
       - рақам (YouTube itag) бўлса: шу форматни танлаймиз
@@ -1103,7 +1103,7 @@ def _download_video(url: str, format_id: Optional[str], workdir: str, has_audio:
     outtmpl = os.path.join(workdir, "%(title).200s.%(ext)s")
 
     def _run_with_opts(opts: Dict[str, Any]) -> Path:
-        """Run yt-dlp download and return a non-empty file path from workdir."""
+        """Run yt_dlp download and return a non-empty file path from workdir."""
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
@@ -1452,7 +1452,7 @@ async def _task_show_youtube_formats(
             pass
 
 
-        # Agar yt-dlp формат метамаълумотлари тўлиқ келмаса (ёки 1 та форматгина чиқса),
+        # Agar yt_dlp формат метамаълумотлари тўлиқ келмаса (ёки 1 та форматгина чиқса),
         # UI барибир 144/240/360/480/720/1080 вариантларни кўрсатади.
         # Бу вариантлар "h:XXX" pseudo format бўлиб, юклаш пайтида height cap сифатида ишлатилади.
         # Лекин ҳажмни кўрсатиш учун real форматдан (height<=cap) битрейт/хажмни тахмин қиламиз.
@@ -1757,7 +1757,7 @@ def _download_tiktok_photos_zip(url: str, workdir: str) -> Path:
 def _download_tiktok_photo_audio(url: str, workdir: str) -> Path:
     """Best-effort: TikTok /photo/ postdan audio (MP3) chiqarib beradi.
 
-    1) /photo/ID -> /video/ID ko‘rinishiga aylantirib yt-dlp orqali audio
+    1) /photo/ID -> /video/ID ko‘rinishiga aylantirib yt_dlp orqali audio
     2) Agar bo‘lmasa, gallery-dl orqali medialarni tushirib, eng katta mp4/m4a dan audio ajratadi.
     """
     clean = _strip_query(url)
