@@ -52,7 +52,7 @@ import subprocess
 import zipfile
 import urllib.request
 import urllib.error
-from urllib.parse import urlsplit, urlunsplit, urlparse
+from urllib.parse import urlsplit, urlunsplit, urlparse, quote
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 
@@ -732,6 +732,8 @@ def _friendly_ydl_error(e: Exception, lang: str) -> str:
 _COOKIEFILE_PATH: Optional[str] = None
 _COOKIE_LOGGED: bool = False
 
+_PROXY_LOGGED: bool = False
+
 def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
     """Prepare a **writable** cookies.txt for yt-dlp and return its path.
 
@@ -865,7 +867,7 @@ def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
 
 def _normalize_proxy(raw: str) -> Optional[str]:
     """Validate and normalize proxy string from env.
-    Accepts: http(s)://user:pass@host:port , socks5://host:port , etc.
+    Accepts: http(s)://user:pass@host:port , socks5://host:port , socks5h://host:port
     Returns normalized proxy URL or None if invalid.
     """
     if not raw:
@@ -880,7 +882,6 @@ def _normalize_proxy(raw: str) -> Optional[str]:
         u = urlparse(p)
         if u.scheme not in ("http", "https", "socks5", "socks5h"):
             return None
-        # urlparse raises ValueError for bad port in py3.13 sometimes when accessing .port
         host = u.hostname
         if not host:
             return None
@@ -893,6 +894,84 @@ def _normalize_proxy(raw: str) -> Optional[str]:
     except Exception:
         return None
     return p
+
+
+def _mask_proxy(proxy_url: str) -> str:
+    """Mask credentials in proxy URL for safe logging."""
+    try:
+        u = urlparse(proxy_url)
+        host = u.hostname or ""
+        port = u.port
+        if port is None:
+            return f"{u.scheme}://{host}"
+        return f"{u.scheme}://***:***@{host}:{port}" if (u.username or u.password) else f"{u.scheme}://{host}:{port}"
+    except Exception:
+        return "proxy://***"
+
+
+def _get_proxy_from_env() -> Optional[str]:
+    """Get proxy URL from env and normalize it.
+
+    Supported env:
+      - YTDLP_PROXY (recommended): full URL, e.g. socks5h://user:pass@host:1080
+      - If YTDLP_PROXY contains placeholders USER/PASS/HOST/PORT, we try to substitute using:
+            YTDLP_PROXY_USER, YTDLP_PROXY_PASS, YTDLP_PROXY_HOST, YTDLP_PROXY_PORT
+            (optional) YTDLP_PROXY_SCHEME (default socks5h)
+      - If YTDLP_PROXY is empty, we can also build it from the parts above.
+      - Fallback (if you already have them set): ALL_PROXY / HTTPS_PROXY / HTTP_PROXY
+    """
+    raw = (os.getenv("YTDLP_PROXY") or "").strip()
+
+    # If user didn't set YTDLP_PROXY, fall back to standard proxy envs
+    if not raw:
+        raw = (os.getenv("ALL_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or "").strip()
+
+    # Helper: build from parts
+    def _build_from_parts() -> Optional[str]:
+        host = (os.getenv("YTDLP_PROXY_HOST") or "").strip()
+        port = (os.getenv("YTDLP_PROXY_PORT") or "").strip()
+        if not host or not port:
+            return None
+        scheme = (os.getenv("YTDLP_PROXY_SCHEME") or "socks5h").strip().lower()
+        if scheme not in ("http", "https", "socks5", "socks5h"):
+            scheme = "socks5h"
+        user = (os.getenv("YTDLP_PROXY_USER") or "").strip()
+        pwd = (os.getenv("YTDLP_PROXY_PASS") or "").strip()
+        auth = ""
+        if user or pwd:
+            auth = f"{quote(user)}:{quote(pwd)}@"
+        return f"{scheme}://{auth}{host}:{port}"
+
+    # If raw looks like template placeholders, try substitution
+    if raw and any(tok in raw for tok in ("USER", "PASS", "HOST", "PORT")):
+        repl = {
+            "USER": (os.getenv("YTDLP_PROXY_USER") or "").strip(),
+            "PASS": (os.getenv("YTDLP_PROXY_PASS") or "").strip(),
+            "HOST": (os.getenv("YTDLP_PROXY_HOST") or "").strip(),
+            "PORT": (os.getenv("YTDLP_PROXY_PORT") or "").strip(),
+        }
+        replaced = raw
+        for k, v in repl.items():
+            if k in replaced and v:
+                replaced = replaced.replace(k, v)
+        raw = replaced
+
+    # If still empty or still placeholder-like, attempt build-from-parts
+    if not raw or any(tok in raw for tok in ("USER", "PASS", "HOST", "PORT")):
+        built = _build_from_parts()
+        if built:
+            raw = built
+
+    proxy = _normalize_proxy(raw)
+    if proxy:
+        return proxy
+
+    # If user attempted to set YTDLP_PROXY but it's invalid, warn with actionable hint
+    if (os.getenv("YTDLP_PROXY") or "").strip():
+        log.warning(
+            "YTDLP_PROXY noto‘g‘ri formatda yoki PORT raqam emas. To‘g‘ri misol: socks5h://user:pass@host:1080 (yoki qismlarga bo‘lib: YTDLP_PROXY_HOST/PORT/USER/PASS)."
+        )
+    return None
 
 def _parse_js_runtimes_env(value: str) -> Dict[str, Dict[str, Any]]:
     """Parse YTDLP_JS_RUNTIME env into yt-dlp Python API format.
@@ -1015,15 +1094,14 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
         except Exception as e:
             # Agar kutubxona/target mos kelmasa, bot yiqilib qolmasligi uchun impersonate'ni o‘chirib yuboramiz.
             log.warning("Impersonate sozlamasi o‘chirildi (xato: %s). YTDLP_IMPERSONATE=%s", e, imp)
-    # Proxy (ixtiyoriy): YTDLP_PROXY=http://user:pass@host:port
-    proxy_raw = (os.getenv("YTDLP_PROXY") or "").strip()
-    proxy = _normalize_proxy(proxy_raw)
+    # Proxy (ixtiyoriy)
+    proxy = _get_proxy_from_env()
     if proxy:
         opts["proxy"] = proxy
-    elif proxy_raw:
-        # noto‘g‘ri proxy bo‘lsa, bot yiqilmasin — proxy’ni e'tiborsiz qoldiramiz
-        log.warning("YTDLP_PROXY noto‘g‘ri formatda, e'tiborsiz qoldirildi: %s", proxy_raw)
-
+        global _PROXY_LOGGED
+        if not _PROXY_LOGGED:
+            _PROXY_LOGGED = True
+            log.info("YTDLP proxy enabled: %s", _mask_proxy(proxy))
 
     # ffmpeg (merge/MP3 uchun) — Railway/Render'да PATH'da bo'lishi mumkin
     try:
