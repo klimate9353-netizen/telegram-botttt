@@ -236,17 +236,16 @@ TEXT = {
     
     "yt_403": {
         LANG_UZ: "❌ YouTube 403 Forbidden. Bu odatda cloud/datacenter IP blok ёки cookies eskirganidan bo‘ladi. Cookies.txt ni yangilang (login bo‘lgan brauzerdan eksport), yoki Proxy/VPS (rezident IP) ishlating.",
-        LANG_RU: "❌ YouTube 403 Forbidden. Обычно это блокировка cloud/datacenter IP или устаревшие cookies. Самое надежное — резидентный/ISP proxy: задайте YTDLP_PROXY. Дополнительно: обновите cookies.txt (экспорт из залогиненного браузера).",
+        LANG_RU: "❌ YouTube 403 Forbidden. Обычно это блокировка cloud/datacenter IP или устаревшие cookies. Обновите cookies.txt (экспорт из залогиненного браузера) или используйте Proxy/VPS (резидентный IP).",
     },
 
     "yt_botcheck_even_with_cookies": {
-        LANG_UZ: "❌ YouTube «men robot emasman» tekshiruvini so‘radi. Cookies бўлса ҳам cloud/datacenter IP сабаб captcha чиқиши мумкин. Энг ишончли ечим — rezident/ISP proxy: ботда YTDLP_PROXY ни созланг. Ёки cookies.txt ни янгилаб кўринг (login бўлган браузердан).",
+        LANG_UZ: "❌ YouTube «men robot emasman» tekshiruvini so‘radi. Cookies топилган бўлса ҳам cloud/IP блок сабабли baribir captcha chiqishi mumkin. Cookies.txt ni yangilang (login bo‘lgan brauzerdan), yoki VPS/Proxy (rezident IP) ishlating.",
         LANG_RU: "❌ YouTube просит подтверждение «я не бот». Ҳатто cookies билан ҳам cloud (datacenter IP) капча может появляться. Обновите cookies.txt (из залогиненного браузера) или используйте VPS/Proxy (резидентный IP).",
     },
 "err_generic": {LANG_UZ: "❌ Xatolik: {err}", LANG_RU: "❌ Ошибка: {err}"},
 
     "err_rate_limited": {LANG_UZ: "⚠️ Juda ko‘p so‘rov yuborildi (429). Biroz kutib qayta urinib ko‘ring.", LANG_RU: "⚠️ Слишком много запросов (429). Подождите и попробуйте снова."},
-    "err_youtube_botcheck": {LANG_UZ: "⚠️ YouTube «bot-check» чиқарди. Cookie (YT_COOKIES_B64) ни тўғри қўйинг ёки прокси/VPS (резидент IP) ишлатинг, кейин линкни қайта юборинг.", LANG_RU: "⚠️ YouTube требует подтверждение (bot-check). Проверьте cookies (YT_COOKIES_B64) или используйте proxy/VPS (резидентный IP), затем отправьте ссылку снова."},
     "err_format_unavailable": {LANG_UZ: "⚠️ Танланган формат мавжуд эмас ёки форматлар тўлиқ чиқмаяпти. Танлаш ойнасини қайта чиқаринг (линкни қайта юборинг) ёки cookies/proxy ни текширинг.", LANG_RU: "⚠️ Выбранный формат недоступен или список форматов неполный. Снова получите форматы (отправьте ссылку заново) или проверьте cookies/proxy."},
     "not_admin": {LANG_UZ: "❌ Siz admin emassiz.", LANG_RU: "❌ Вы не админ."},
     "usage_broadcast": {
@@ -606,7 +605,7 @@ def _video_total_size_bytes(info: Dict[str, Any], f: Dict[str, Any]) -> int:
 def _video_bytes_only_est(info: Dict[str, Any], f: Dict[str, Any]) -> int:
     """Estimate ONLY the video-stream size in bytes. Returns 0 if unknown.
 
-    This is used to avoid showing misleading identical sizes when yt_dlp doesn't
+    This is used to avoid showing misleading identical sizes when yt-dlp doesn't
     provide per-format size/bitrate.
     """
     dur = info.get("duration") or f.get("duration")
@@ -634,7 +633,7 @@ def _video_total_size_bytes_strict(info: Dict[str, Any], f: Dict[str, Any]) -> i
     return total
 
 def _pick_best_thumbnail_url(info: Dict[str, Any]) -> Optional[str]:
-    # yt_dlp may provide 'thumbnail' and list 'thumbnails'
+    # yt-dlp may provide 'thumbnail' and list 'thumbnails'
     t = info.get("thumbnail")
     if t:
         return t
@@ -661,14 +660,13 @@ def _cache_get(token: str) -> Optional[Dict[str, Any]]:
 
 
 def _friendly_ydl_error(e: Exception, lang: str) -> str:
-    """Minimal, user-friendly error text for logs from yt_dlp / download."""
+    """Minimal, user-friendly error text for logs from yt-dlp / download."""
     s = str(e)
     s_low = s.lower()
 
     # YouTube bot-check patterns
     if "sign in to confirm you’re not a bot" in s_low or "confirm you’re not a bot" in s_low:
         # Cookies bor-yo‘qligini taxmin qilamiz
-        if (os.getenv("YT_COOKIES_B64") or os.getenv("YT_COOKIES_FILE")):
             return _t(lang, "yt_botcheck_even_with_cookies")
         return _t(lang, "yt_need_cookies")
 
@@ -698,26 +696,44 @@ def _friendly_ydl_error(e: Exception, lang: str) -> str:
 
 
 
-# ---------------------------- yt_dlp cookies helpers ----------------------------
+# ---------------------------- yt-dlp cookies helpers ----------------------------
 
 _COOKIEFILE_PATH: Optional[str] = None
 _COOKIE_LOGGED: bool = False
 
 def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
-    """Prepare a **writable** cookies.txt for yt_dlp and return its path.
+    """Prepare a **writable** cookies.txt for yt-dlp and return its path.
 
     Important: do NOT reuse the same temp cookies path across concurrent requests.
-    yt_dlp may update cookies on exit, and parallel runs can corrupt a shared file.
+    yt-dlp may update cookies on exit, and parallel runs can corrupt a shared file.
     So we create a fresh temp file per call.
 
     Sources:
-    - YT_COOKIES_B64: base64 of cookies.txt
     - YT_COOKIES_FILE: path to cookies.txt (e.g. /etc/secrets/cookies.txt)
     """
     def _dst_path() -> str:
         base_dir = workdir if workdir else tempfile.gettempdir()
         os.makedirs(base_dir, exist_ok=True)
         return os.path.join(base_dir, f"yt_cookies_{uuid.uuid4().hex}.txt")
+
+    def _prepare_yt_cookies_file() -> str | None:
+    """Prepare a temp cookies.txt for yt-dlp.
+
+    Supported:
+      - YT_COOKIES_FILE: path to cookies.txt (Netscape format). On Railway, easiest is to keep it in repo
+        or mount it to /etc/secrets and point this var to it.
+      - YT_COOKIES_URL: direct https link to cookies.txt (recommended). We'll download to /tmp each start.
+
+    Removed:
+    """
+    import shutil
+    import tempfile
+    import urllib.request
+
+    def _dst_path() -> str:
+        fd, path = tempfile.mkstemp(prefix="yt_cookies_", suffix=".txt")
+        os.close(fd)
+        return path
 
     def _warn_if_suspicious(path: str) -> None:
         try:
@@ -727,70 +743,59 @@ def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
                 return
             with open(path, "rb") as f:
                 head = f.read(256)
+            # try to detect Netscape header in a tolerant way
             head_txt = head.decode("utf-8", errors="ignore").strip()
             if head_txt and ("Netscape" not in head_txt) and ("# HTTP Cookie File" not in head_txt):
                 log.warning("YT cookies file may be in a non-Netscape format: %s", path)
         except Exception:
             pass
 
-    # 1) Base64 variant
-    b64 = (os.getenv("YT_COOKIES_B64") or "").strip()
-    if b64:
-        # If user pasted the PowerShell command instead of output, ignore.
-        if ("[Convert]::ToBase64String" in b64) or ("ReadAllBytes" in b64):
-            log.warning("YT_COOKIES_B64 qiymati base64 emas (buyruq matni ko‘rinadi). Uni o‘chirib tashlang yoki haqiqiy base64 natijani kiriting.")
-        else:
-            try:
-                import base64
-                clean = re.sub(r"\s+", "", b64)
-                # Fix missing padding
-                pad = (-len(clean)) % 4
-                if pad:
-                    clean += "=" * pad
-                data = base64.b64decode(clean.encode("ascii"), validate=False)
-                tmp_path = _dst_path()
-                with open(tmp_path, "wb") as f:
-                    f.write(data)
-                _warn_if_suspicious(tmp_path)
-                log.info("YT cookies (b64) tayyor: %s (exists=%s, size=%s)", tmp_path, os.path.exists(tmp_path), os.path.getsize(tmp_path))
-                return tmp_path
-            except Exception as e:
-                log.warning("YT_COOKIES_B64 decode xatosi: %s", e)
+    # 1) URL variant (recommended)
+    url = (os.getenv("YT_COOKIES_URL") or "").strip()
+    if url:
+        try:
+            tmp_path = _dst_path()
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp, open(tmp_path, "wb") as f:
+                f.write(resp.read())
+            _warn_if_suspicious(tmp_path)
+            log.info("YT cookies (url) tayyor: %s (exists=%s, size=%s)", tmp_path, os.path.exists(tmp_path), os.path.getsize(tmp_path))
+            return tmp_path
+        except Exception as e:
+            log.warning("YT_COOKIES_URL yuklab olish xatosi: %s", e)
 
     # 2) File path variant
-    src = (os.getenv("YT_COOKIES_FILE") or "").strip()
+    src_path = (os.getenv("YT_COOKIES_FILE") or "").strip()
     candidates: list[str] = []
-    if src:
-        candidates.append(src)
-        candidates.append(os.path.join("/etc/secrets", os.path.basename(src)))
-        candidates.append(os.path.basename(src))
-    candidates += ["/etc/secrets/cookies.txt", "/etc/secrets/Cookies.txt", "cookies.txt", "Cookies.txt"]
+    if src_path:
+        candidates.append(src_path)
+        candidates.append(os.path.join("/etc/secrets", os.path.basename(src_path)))
+        candidates.append(os.path.basename(src_path))
+    candidates += ["/etc/secrets/cookies.txt", "/etc/secrets/Cookies.txt", "cookies.txt", "Cookies.txt", "cookies_youtube.txt"]
 
-    src_path = None
+    found = None
     for p in candidates:
         try:
             if p and os.path.exists(p) and os.path.getsize(p) > 0:
-                src_path = p
+                found = p
                 break
         except Exception:
             continue
 
-    if not src_path:
-        if src:
-            log.warning("YT_COOKIES_FILE topildi, lekin fayl yo'q: %s", src)
+    if not found:
+        if src_path:
+            log.warning("YT_COOKIES_FILE topildi, lekin fayl yo'q: %s", src_path)
         return None
 
     try:
         tmp_path = _dst_path()
-        shutil.copyfile(src_path, tmp_path)
+        shutil.copyfile(found, tmp_path)
         _warn_if_suspicious(tmp_path)
-        log.info("YT cookies (file) tayyor: %s (exists=%s, size=%s, src=%s)", tmp_path, os.path.exists(tmp_path), os.path.getsize(tmp_path), src_path)
+        log.info("YT cookies (file) tayyor: %s (exists=%s, size=%s, src=%s)", tmp_path, os.path.exists(tmp_path), os.path.getsize(tmp_path), found)
         return tmp_path
     except Exception as e:
         log.warning("YT cookies copy xatosi: %s", e)
         return None
-
-
 
 def _normalize_proxy(raw: str) -> Optional[str]:
     """Validate and normalize proxy string from env.
@@ -824,9 +829,9 @@ def _normalize_proxy(raw: str) -> Optional[str]:
     return p
 
 def _parse_js_runtimes_env(value: str) -> Dict[str, Dict[str, Any]]:
-    """Parse YTDLP_JS_RUNTIME env into yt_dlp Python API format.
+    """Parse YTDLP_JS_RUNTIME env into yt-dlp Python API format.
 
-    yt_dlp (2026+) expects: dict of {runtime: {config}}
+    yt-dlp (2026+) expects: dict of {runtime: {config}}
     Examples:
       - "deno" -> {"deno": {}}
       - "node" -> {"node": {}}
@@ -912,7 +917,7 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
 
 
     # Impersonate (ixtiyoriy): YTDLP_IMPERSONATE=chrome|chrome-124:windows-10|safari|...
-    # Yangi yt_dlp (2026+) Python API'da opts["impersonate"] satri endi str emas, ImpersonateTarget bo‘lishi kerak.
+    # Yangi yt-dlp (2026+) Python API'da opts["impersonate"] satri endi str emas, ImpersonateTarget bo‘lishi kerak.
     imp = (os.getenv("YTDLP_IMPERSONATE") or "").strip()
     if imp:
         try:
@@ -966,13 +971,6 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
             opts["remote_components"] = rc
     except Exception:
         pass
-
-    # Proxy (eng barqaror yechim: rezident/ISP proxy).
-    # ENV: YTDLP_PROXY="socks5h://user:pass@host:port" yoki "http://user:pass@host:port"
-    proxy = (os.getenv("YTDLP_PROXY") or os.getenv("YT_PROXY") or "").strip()
-    if proxy:
-        opts["proxy"] = proxy
-
 
 
     return opts
@@ -1088,7 +1086,7 @@ def _select_youtube_formats(info: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _download_video(url: str, format_id: Optional[str], workdir: str, has_audio: Optional[bool] = None) -> Path:
-    """yt_dlp орқали видеони юклаб олиш.
+    """yt-dlp орқали видеони юклаб олиш.
 
     format_id:
       - рақам (YouTube itag) бўлса: шу форматни танлаймиз
@@ -1103,7 +1101,7 @@ def _download_video(url: str, format_id: Optional[str], workdir: str, has_audio:
     outtmpl = os.path.join(workdir, "%(title).200s.%(ext)s")
 
     def _run_with_opts(opts: Dict[str, Any]) -> Path:
-        """Run yt_dlp download and return a non-empty file path from workdir."""
+        """Run yt-dlp download and return a non-empty file path from workdir."""
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
@@ -1452,7 +1450,7 @@ async def _task_show_youtube_formats(
             pass
 
 
-        # Agar yt_dlp формат метамаълумотлари тўлиқ келмаса (ёки 1 та форматгина чиқса),
+        # Agar yt-dlp формат метамаълумотлари тўлиқ келмаса (ёки 1 та форматгина чиқса),
         # UI барибир 144/240/360/480/720/1080 вариантларни кўрсатади.
         # Бу вариантлар "h:XXX" pseudo format бўлиб, юклаш пайтида height cap сифатида ишлатилади.
         # Лекин ҳажмни кўрсатиш учун real форматдан (height<=cap) битрейт/хажмни тахмин қиламиз.
@@ -1757,7 +1755,7 @@ def _download_tiktok_photos_zip(url: str, workdir: str) -> Path:
 def _download_tiktok_photo_audio(url: str, workdir: str) -> Path:
     """Best-effort: TikTok /photo/ postdan audio (MP3) chiqarib beradi.
 
-    1) /photo/ID -> /video/ID ko‘rinishiga aylantirib yt_dlp orqali audio
+    1) /photo/ID -> /video/ID ko‘rinishiga aylantirib yt-dlp orqali audio
     2) Agar bo‘lmasa, gallery-dl orqali medialarni tushirib, eng katta mp4/m4a dan audio ajratadi.
     """
     clean = _strip_query(url)
