@@ -1020,6 +1020,13 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
         "http_chunk_size": 10 * 1024 * 1024,
     }
 
+    # Debug: show yt-dlp warnings/verbose when requested
+    if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1":
+        # Allow yt-dlp to print useful warnings into logs when debugging.
+        opts["quiet"] = False
+        opts["no_warnings"] = False
+        opts["verbose"] = True
+
     # Env overrides (Railway/Render)
     try:
         st = int(os.getenv("YTDLP_SOCKET_TIMEOUT", "") or 0)
@@ -1035,12 +1042,6 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
             opts["extractor_retries"] = max(1, rt // 3)
     except Exception:
         pass
-
-    # If debugging formats, show yt-dlp warnings (helps detect PO token / SABR issues)
-    if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1" or os.getenv("YTDLP_VERBOSE", "0") == "1":
-        opts["quiet"] = False
-        opts["no_warnings"] = False
-        opts["verbose"] = True
 
 
     # Cookies (YouTube datacenter bloklari uchun foydali)
@@ -1058,7 +1059,7 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
     if clients_env:
         clients = [c.strip() for c in re.split(r"[,\s]+", clients_env) if c.strip()]
     else:
-        clients = ["android", "ios", "web_creator", "mweb", "web"]
+        clients = ["android", "ios", "web"]
     opts["extractor_args"]["youtube"].setdefault("player_client", clients)
     # HLS (m3u8) manifestlari баъзи тармоқларда manifest.googlevideo.com timeout бериши мумкин.
     # Шунинг учун (default) HLS'ни ўчириб, DASH форматлар билан ишлаймиз.
@@ -1074,23 +1075,6 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
                 ysk.append("hls")
             opts["extractor_args"]["youtube"]["skip"] = ysk
 
-
-
-    # PO Token (YouTube formats >360p muammosi uchun) — env orqali beriladi.
-    # Format: "web.player+TOKEN" yoki "mweb.player+TOKEN" (bir nechta bo'lsa vergul bilan).
-    pot_env = (os.getenv("YTDLP_PO_TOKEN") or os.getenv("YTDLP_PO_TOKENS") or "").strip()
-    if pot_env:
-        toks = [t.strip() for t in pot_env.split(",") if t.strip()]
-        # yt-dlp Python API: extractor_args['youtube']['po_token'] => list[str]
-        opts["extractor_args"]["youtube"]["po_token"] = toks
-
-    # Debug: PO token trace (ixtiyoriy)
-    if os.getenv("YTDLP_POT_TRACE", "0") == "1":
-        opts["extractor_args"]["youtube"]["pot_trace"] = ["true"]
-
-    # (ixtiyoriy) POT bo'lmasa ham "missing_pot" formatlarni ko'rsatish: YTDLP_INCLUDE_MISSING_POT=1
-    if os.getenv("YTDLP_INCLUDE_MISSING_POT", "0") == "1":
-        opts["extractor_args"]["youtube"]["formats"] = ["missing_pot"]
 
     # HTTP headers (User-Agent / Accept-Language)
     opts.setdefault("http_headers", {})
@@ -1165,66 +1149,13 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
 
     return opts
 
-def _merge_format_lists(*format_lists: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-    """
-    Merge multiple yt-dlp format lists into one de-duplicated list.
-    Some YouTube "player_client" variants return partial format sets; merging often restores missing heights.
-    """
-    best: Dict[str, Dict[str, Any]] = {}
-
-    def key(f: Dict[str, Any]) -> str:
-        fid = f.get("format_id")
-        if fid:
-            return str(fid)
-        # Fallback: stable-ish signature
-        return "|".join([
-            str(f.get("ext") or ""),
-            str(_yt_height(f) or 0),
-            str(f.get("fps") or 0),
-            str(f.get("vcodec") or ""),
-            str(f.get("acodec") or ""),
-            str(f.get("protocol") or ""),
-            str(f.get("tbr") or f.get("vbr") or f.get("abr") or 0),
-        ])
-
-    def score(f: Dict[str, Any]) -> tuple:
-        # Higher is better
-        h = int(_yt_height(f) or 0)
-        has_url = 1 if f.get("url") else 0
-        fs = float(f.get("filesize") or f.get("filesize_approx") or 0)
-        br = float(f.get("tbr") or f.get("vbr") or f.get("abr") or 0)
-        ext = (f.get("ext") or "").lower()
-        ext_score = 2 if ext == "mp4" else (1 if ext in ("webm", "mkv") else 0)
-        # Prefer known filesize, then bitrate, then mp4, then URL presence (URL should exist, but keep safe)
-        return (h, has_url, fs, br, ext_score)
-
-    for lst in format_lists:
-        if not lst:
-            continue
-        for f in lst:
-            k = key(f)
-            if k not in best:
-                best[k] = f
-            else:
-                if score(f) > score(best[k]):
-                    best[k] = f
-
-    merged = list(best.values())
-    # Stable sort: height asc then bitrate asc (UI later picks best per height anyway)
-    merged.sort(key=lambda f: (int(_yt_height(f) or 0), float(f.get("tbr") or f.get("vbr") or f.get("abr") or 0)))
-    return merged
-
-
 def _extract_info(url: str) -> Dict[str, Any]:
-    """
-    Extract info for a URL.
-    For YouTube, try multiple player clients and MERGE returned formats (helps when one client returns only 360p).
-    """
+    # Formatlarni ko‘rsatish uchun to‘liq "process=True" kerak bo‘ladi,
+    # aks holda ba'zan faqat audio ko‘rinib qoladi.
     ydl_opts = build_ydl_base(outtmpl="%(title)s.%(ext)s", workdir=tempfile.gettempdir())
     ydl_opts["ignore_no_formats_error"] = True
     ydl_opts["skip_download"] = True
-
-    # Build client list (default: android -> ios -> web)
+    # Format ro'yxatini olishda "web" client ko'proq formatlarni qaytaradi.
     try:
         ydl_opts.setdefault("extractor_args", {})
         ydl_opts["extractor_args"].setdefault("youtube", {})
@@ -1232,90 +1163,50 @@ def _extract_info(url: str) -> Dict[str, Any]:
         if clients_env:
             clients = [c.strip() for c in re.split(r"[,\s]+", clients_env) if c.strip()]
         else:
-            clients = ["android", "ios", "web_creator", "mweb", "web"]
-    except Exception:
-        clients = ["android", "ios", "web_creator", "mweb", "web"]
-
-    merge_clients = os.getenv("YTDLP_MERGE_CLIENTS", "1").strip() != "0"
-
-    def run_once(opts: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            with YoutubeDL(opts) as ydl:
-                return ydl.extract_info(url, download=False)
-        except Exception as e:
-            msg = str(e)
-            if "Impersonate target" in msg and "not available" in msg:
-                opts.pop("impersonate", None)
-                log.warning("Impersonate o‘chirildi (mavjud emas): %s", msg)
-                with YoutubeDL(opts) as ydl:
-                    return ydl.extract_info(url, download=False)
-            raise
-
-    # Non-YouTube URLs: normal single pass is enough
-    if "youtube.com" not in url and "youtu.be" not in url:
-        info = run_once(ydl_opts)
-        return info
-
-    # YouTube: try per-client and merge formats (if enabled)
-    infos: List[Dict[str, Any]] = []
-    formats_lists: List[List[Dict[str, Any]]] = []
-
-    if merge_clients and len(clients) > 1:
-        for c in clients:
-            try:
-                opts_c = dict(ydl_opts)
-                opts_c.setdefault("extractor_args", {})
-                opts_c["extractor_args"].setdefault("youtube", {})
-                opts_c["extractor_args"]["youtube"]["player_client"] = [c]
-                info_c = run_once(opts_c)
-                infos.append(info_c)
-                formats_lists.append(info_c.get("formats") or [])
-                if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1":
-                    try:
-                        fs = info_c.get("formats") or []
-                        hs = sorted({int(_yt_height(f) or 0) for f in fs if int(_yt_height(f) or 0) > 0})
-                        log.info("YT formats debug (client=%s): total=%s heights=%s", c, len(fs), hs[:30])
-                    except Exception:
-                        pass
-            except Exception as e:
-                log.warning("YT extract failed (client=%s): %s", c, e)
-
-        if infos:
-            # Choose a base info with the richest formats (most heights), then merge
-            def richness(info: Dict[str, Any]) -> tuple:
-                fs = info.get("formats") or []
-                hs = {int(_yt_height(f) or 0) for f in fs if int(_yt_height(f) or 0) > 0}
-                return (len(hs), len(fs))
-
-            base = sorted(infos, key=richness, reverse=True)[0]
-            merged_formats = _merge_format_lists(*formats_lists)
-            base["formats"] = merged_formats
-
-            if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1":
-                try:
-                    hs = sorted({int(_yt_height(f) or 0) for f in merged_formats if int(_yt_height(f) or 0) > 0})
-                    log.info("YT formats debug (merged): total=%s heights=%s", len(merged_formats), hs[:40])
-                except Exception:
-                    pass
-            return base
-
-    # Fallback: single pass with all clients at once
-    try:
-        ydl_opts.setdefault("extractor_args", {})
-        ydl_opts["extractor_args"].setdefault("youtube", {})
+            clients = ["android", "ios", "web"]
         ydl_opts["extractor_args"]["youtube"]["player_client"] = clients
     except Exception:
         pass
-
-    info = run_once(ydl_opts)
-    if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1":
-        try:
-            fs = info.get("formats") or []
-            hs = sorted({int(_yt_height(f) or 0) for f in fs if int(_yt_height(f) or 0) > 0})
-            log.info("YT formats debug: total=%s heights=%s", len(fs), hs[:30])
-        except Exception:
-            pass
-    return info
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1":
+                try:
+                    fs = info.get("formats") or []
+                    hs = sorted({int(_yt_height(f) or 0) for f in fs if int(_yt_height(f) or 0) > 0})
+                    log.info("YT formats debug: total=%s heights=%s", len(fs), hs[:25])
+                    try:
+                        protos = {}
+                        for ff in fs:
+                            p = (ff.get("protocol") or "").lower()
+                            protos[p] = protos.get(p, 0) + 1
+                        top_protos = sorted(protos.items(), key=lambda kv: kv[1], reverse=True)[:8]
+                        log.info("YT formats debug: protocol_counts=%s", top_protos)
+                        sample = []
+                        for ff in sorted(fs, key=lambda x: int(_yt_height(x) or 0), reverse=True)[:12]:
+                            sample.append({
+                                "id": ff.get("format_id"),
+                                "h": int(_yt_height(ff) or 0),
+                                "ext": ff.get("ext"),
+                                "proto": ff.get("protocol"),
+                                "vcodec": ff.get("vcodec"),
+                                "acodec": ff.get("acodec"),
+                            })
+                        log.info("YT formats debug: top_formats=%s", sample)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            return info
+    except Exception as e:
+        msg = str(e)
+        if "Impersonate target" in msg and "not available" in msg:
+            # Railway/host muhitida curl-cffi yoki kerakli handler bo‘lmasa, impersonate target mavjud bo‘lmay qoladi.
+            ydl_opts.pop("impersonate", None)
+            log.warning("Impersonate o‘chirildi (mavjud emas): %s", msg)
+            with YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(url, download=False)
+        raise
 
 
 def _select_youtube_formats(info: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -2301,6 +2192,14 @@ def build_app():
 
 def main() -> None:
     app = build_app()
+    # Startup diagnostics (useful for YouTube format issues)
+    try:
+        import shutil as _sh
+        log.info("ENV: RUN_MODE=%s YTDLP_YT_CLIENTS=%s YTDLP_SKIP_HLS=%s YTDLP_JS_RUNTIME=%s YTDLP_REMOTE_EJS=%s",
+                 os.getenv("RUN_MODE"), os.getenv("YTDLP_YT_CLIENTS"), os.getenv("YTDLP_SKIP_HLS"), os.getenv("YTDLP_JS_RUNTIME"), os.getenv("YTDLP_REMOTE_EJS"))
+        log.info("BINARIES: ffmpeg=%s deno=%s node=%s", bool(_sh.which("ffmpeg")), bool(_sh.which("deno")), bool(_sh.which("node")))
+    except Exception:
+        pass
     log.info("Bot started. Admins: %s", ",".join(str(x) for x in sorted(ADMIN_IDS)) if ADMIN_IDS else "(not set)")
 
     mode = RUN_MODE
