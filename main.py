@@ -1113,17 +1113,41 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
 
     # --- YouTube EJS / JS-challenge (formatlar yo‘qolib qolmasligi учун) ---
     # Ba'zi videolarda YouTube "bot-check" qilib, JS-challenge yechilmasa faqat storyboard (rasmlar) qolib ketadi.
+
     # Buni yechish uchun JS runtime (deno yoki node) va (kerak bo‘lsa) EJS remote component ruxsati kerak bo‘ladi.
     try:
         js_runtime_env = (os.getenv("YTDLP_JS_RUNTIME") or "").strip().lower()
+
+        def _rt_exists(rt: str, cfg: Dict[str, Any]) -> bool:
+            p = (cfg or {}).get("path")
+            if p:
+                return os.path.exists(p) and os.access(p, os.X_OK)
+            return shutil.which(rt) is not None
+
+        chosen: Dict[str, Dict[str, Any]] = {}
         if js_runtime_env:
-            opts["js_runtimes"] = _parse_js_runtimes_env(js_runtime_env)
-        else:
+            requested = _parse_js_runtimes_env(js_runtime_env)
+            chosen = {rt: cfg for rt, cfg in requested.items() if _rt_exists(rt, cfg)}
+            if not chosen:
+                log.warning("YTDLP_JS_RUNTIME=%s lekin runtime topilmadi. Auto-detect qilaman.", js_runtime_env)
+
+        if not chosen:
             # avtomatik: avval deno, bo‘lmasa node
             if shutil.which("deno"):
-                opts["js_runtimes"] = {"deno": {}}
+                chosen = {"deno": {}}
             elif shutil.which("node"):
-                opts["js_runtimes"] = {"node": {}}
+                chosen = {"node": {}}
+
+        if chosen:
+            opts["js_runtimes"] = chosen
+
+        log.info(
+            "JS runtimes: env=%s, deno=%s, node=%s, using=%s",
+            js_runtime_env or "-",
+            bool(shutil.which("deno")),
+            bool(shutil.which("node")),
+            ",".join(chosen.keys()) if chosen else "NONE",
+        )
 
         # Remote EJS komponentlarini (github) yuklashga ruxsat: kerak bo‘lsa challenge-solver skriptlarini oladi.
         # Istasangiz env bilan o‘chirib qo‘yasiz: YTDLP_REMOTE_EJS=0
@@ -1141,7 +1165,6 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
 
 
     return opts
-
 def _merge_format_lists(*format_lists: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
     """
     Merge multiple yt-dlp format lists into one de-duplicated list.
@@ -1267,6 +1290,18 @@ def _extract_info(url: str) -> Dict[str, Any]:
             base = sorted(infos, key=richness, reverse=True)[0]
             merged_formats = _merge_format_lists(*formats_lists)
             base["formats"] = merged_formats
+            # Агар фақат 360p/1-2 та формат чиқса, одатда JS runtime ишламаяпти ёки HLS/DASH фильтрланяпти.
+            try:
+                hs_all = sorted({int(_yt_height(f) or 0) for f in merged_formats if int(_yt_height(f) or 0) > 0})
+                if hs_all and max(hs_all) <= 360:
+                    log.warning(
+                        "YouTube formatlari cheklangan ko‘rinyapti (max_height=%s). "
+                        "Tekshiring: YTDLP_JS_RUNTIME (deno/node mavjudmi), NIXPACKS_PKGS, "
+                        "YTDLP_SKIP_HLS=0, cookies to‘liqmi, proxy/region blok.",
+                        max(hs_all),
+                    )
+            except Exception:
+                pass
 
             if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1":
                 try:
