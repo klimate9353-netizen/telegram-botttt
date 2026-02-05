@@ -1036,6 +1036,12 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
     except Exception:
         pass
 
+    # If debugging formats, show yt-dlp warnings (helps detect PO token / SABR issues)
+    if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1" or os.getenv("YTDLP_VERBOSE", "0") == "1":
+        opts["quiet"] = False
+        opts["no_warnings"] = False
+        opts["verbose"] = True
+
 
     # Cookies (YouTube datacenter bloklari uchun foydali)
     cookiefile = _ensure_cookiefile(workdir)
@@ -1052,7 +1058,7 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
     if clients_env:
         clients = [c.strip() for c in re.split(r"[,\s]+", clients_env) if c.strip()]
     else:
-        clients = ["android", "ios", "web"]
+        clients = ["android", "ios", "web_creator", "mweb", "web"]
     opts["extractor_args"]["youtube"].setdefault("player_client", clients)
     # HLS (m3u8) manifestlari баъзи тармоқларда manifest.googlevideo.com timeout бериши мумкин.
     # Шунинг учун (default) HLS'ни ўчириб, DASH форматлар билан ишлаймиз.
@@ -1068,6 +1074,23 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
                 ysk.append("hls")
             opts["extractor_args"]["youtube"]["skip"] = ysk
 
+
+
+    # PO Token (YouTube formats >360p muammosi uchun) — env orqali beriladi.
+    # Format: "web.player+TOKEN" yoki "mweb.player+TOKEN" (bir nechta bo'lsa vergul bilan).
+    pot_env = (os.getenv("YTDLP_PO_TOKEN") or os.getenv("YTDLP_PO_TOKENS") or "").strip()
+    if pot_env:
+        toks = [t.strip() for t in pot_env.split(",") if t.strip()]
+        # yt-dlp Python API: extractor_args['youtube']['po_token'] => list[str]
+        opts["extractor_args"]["youtube"]["po_token"] = toks
+
+    # Debug: PO token trace (ixtiyoriy)
+    if os.getenv("YTDLP_POT_TRACE", "0") == "1":
+        opts["extractor_args"]["youtube"]["pot_trace"] = ["true"]
+
+    # (ixtiyoriy) POT bo'lmasa ham "missing_pot" formatlarni ko'rsatish: YTDLP_INCLUDE_MISSING_POT=1
+    if os.getenv("YTDLP_INCLUDE_MISSING_POT", "0") == "1":
+        opts["extractor_args"]["youtube"]["formats"] = ["missing_pot"]
 
     # HTTP headers (User-Agent / Accept-Language)
     opts.setdefault("http_headers", {})
@@ -1209,29 +1232,11 @@ def _extract_info(url: str) -> Dict[str, Any]:
         if clients_env:
             clients = [c.strip() for c in re.split(r"[,\s]+", clients_env) if c.strip()]
         else:
-            clients = ["android", "ios", "web"]
+            clients = ["android", "ios", "web_creator", "mweb", "web"]
     except Exception:
-        clients = ["android", "ios", "web"]
+        clients = ["android", "ios", "web_creator", "mweb", "web"]
 
     merge_clients = os.getenv("YTDLP_MERGE_CLIENTS", "1").strip() != "0"
-
-    # IMPORTANT (YouTube 2025+): do NOT skip HLS for format listing.
-    # Many accounts/IPs get forced into SABR/m3u8 where qualities >360p exist ONLY as HLS streams.
-    # If HLS is skipped (YTDLP_SKIP_HLS=1), you will often see just one progressive 360p format.
-    try:
-        ydl_opts.setdefault("extractor_args", {})
-        ydl_opts["extractor_args"].setdefault("youtube", {})
-        ysk = ydl_opts["extractor_args"]["youtube"].get("skip")
-        if ysk:
-            if isinstance(ysk, str):
-                ysk = [ysk]
-            ysk = [x for x in list(ysk) if x != "hls"]
-            if ysk:
-                ydl_opts["extractor_args"]["youtube"]["skip"] = ysk
-            else:
-                ydl_opts["extractor_args"]["youtube"].pop("skip", None)
-    except Exception:
-        pass
 
     def run_once(opts: Dict[str, Any]) -> Dict[str, Any]:
         try:
