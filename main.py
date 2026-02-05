@@ -1296,7 +1296,6 @@ def _extract_info(url: str) -> Dict[str, Any]:
 
 
 def _select_youtube_formats(info: Dict[str, Any]) -> List[Dict[str, Any]]:
-(info: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Pick a curated set of real, available video formats (no fake 1080/720 labels).
 
     We only show a resolution button if we can map it to an actual format height.
