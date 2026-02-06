@@ -1,6 +1,7 @@
 python-telegram-bot>=20.7
-yt-dlp[default]>=2026.02.04
+yt-dlp[default]>=2026.02.06
 asyncpg
 python-dotenv
 gallery-dl
 curl-cffi
+PySocks
