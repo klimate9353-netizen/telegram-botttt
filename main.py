@@ -973,7 +973,7 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
     if clients_env:
         clients = [c.strip() for c in re.split(r"[,\s]+", clients_env) if c.strip()]
     else:
-        clients = ["android"]  # default: only android (best chance to get full formats on cloud IP)
+        clients = ["android", "ios", "web"]
     opts["extractor_args"]["youtube"].setdefault("player_client", clients)
     # HLS (m3u8) manifestlari баъзи тармоқларда manifest.googlevideo.com timeout бериши мумкин.
     # Шунинг учун (default) HLS'ни ўчириб, DASH форматлар билан ишлаймиз.
@@ -1078,7 +1078,7 @@ def _extract_info(url: str) -> Dict[str, Any]:
         if clients_env:
             clients = [c.strip() for c in re.split(r"[,\s]+", clients_env) if c.strip()]
         else:
-            clients = ["android"]  # default: only android (best chance to get full formats on cloud IP)
+            clients = ["android", "ios", "web"]
         ydl_opts["extractor_args"]["youtube"]["player_client"] = clients
     except Exception:
         pass
@@ -1554,14 +1554,6 @@ async def _task_show_youtube_formats(
     loop = asyncio.get_running_loop()
     try:
         info = await loop.run_in_executor(None, _extract_info, url)
-        # Debug: log raw heights from yt-dlp (helps detect IP/client restrictions)
-        try:
-            fmts_all = info.get('formats') or []
-            hs = sorted({(f.get('height') or 0) for f in fmts_all if (f.get('vcodec') and f.get('vcodec')!='none')})
-            logger.info(f"YT formats raw: total={len(fmts_all)} video_heights={hs[:30]}")
-        except Exception:
-            pass
-
         formats = _select_youtube_formats(info)
         try:
             raw_fmts = info.get("formats") or []
