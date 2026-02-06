@@ -566,28 +566,69 @@ def _best_audio_size_bytes(info: Dict[str, Any]) -> int:
 
 
 def _yt_height(fmt: Dict[str, Any]) -> int:
-    """Best-effort parse of a format's height even when yt-dlp doesn't fill `height`."""
+    """Best-effort parse of a format's height.
+
+    Problem we are fixing:
+      - Sometimes yt-dlp does NOT populate `height` and also keeps `format_note` empty.
+      - In that case, we still want to detect the height from fields like `resolution`
+        (e.g. "640x360", "640×360"), or from the human-readable `format` string.
+
+    Returns 0 if unknown.
+    """
+    # 1) Direct numeric fields (most reliable)
     try:
-        h = fmt.get("height")
-        if h:
-            return int(h)
+        h = int(fmt.get("height") or 0)
+        if h > 0:
+            return h
     except Exception:
         pass
 
-    for k in ("format_note", "resolution", "format"):
+    # Some extractors provide width/height separately
+    try:
+        w = int(fmt.get("width") or 0)
+        h2 = int(fmt.get("height") or 0)
+        if w > 0 and h2 > 0:
+            return h2
+    except Exception:
+        pass
+
+    # 2) Parse common textual fields
+    # Prefer explicit "###p" patterns first, then resolution "WxH"
+    keys = ("format_note", "resolution", "format", "format_id", "display_id")
+    for k in keys:
         s = str(fmt.get(k) or "")
-        m = re.search(r"(\d{3,4})p\b", s)
+        if not s:
+            continue
+
+        # e.g. "360p", "1080p60"
+        m = re.search(r"(?i)(?<!\d)(\d{3,4})p(?:\d{1,3})?(?!\d)", s)
         if m:
             try:
                 return int(m.group(1))
             except Exception:
                 pass
-        m = re.search(r"x(\d{3,4})\b", s)
+
+        # e.g. "640x360", "640×360", "640 x 360"
+        m = re.search(r"(?i)(?<!\d)(\d{2,5})\s*[x×]\s*(\d{2,5})(?!\d)", s)
+        if m:
+            try:
+                # height is the second number in WxH
+                h = int(m.group(2))
+                # ignore weird tiny numbers
+                if h >= 100:
+                    return h
+            except Exception:
+                pass
+
+        # e.g. " 360 " (rare) — only accept if it looks like a resolution token
+        # We keep this conservative to avoid matching bitrate, itag, etc.
+        m = re.search(r"(?i)(?:\b|_)(144|240|360|480|720|1080|1440|2160)(?:\b|_)", s)
         if m:
             try:
                 return int(m.group(1))
             except Exception:
                 pass
+
     return 0
 
 
