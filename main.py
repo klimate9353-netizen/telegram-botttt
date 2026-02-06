@@ -632,6 +632,43 @@ def _yt_height(fmt: Dict[str, Any]) -> int:
     return 0
 
 
+
+
+def _is_real_youtube_video_format(f: Dict[str, Any]) -> bool:
+    """Return True only for real video formats (exclude audio-only and storyboard/preview formats).
+
+    YouTube sometimes returns storyboard/preview formats with tiny "heights" (e.g. 27/45/90/180).
+    Those must NOT be treated as selectable video qualities.
+    """
+    try:
+        if (f.get("vcodec") in (None, "none")):
+            return False
+        # height must be a sane video height
+        h = int(_yt_height(f) or 0)
+        if h < 100:
+            return False
+
+        # Exclude obvious storyboard/thumbnail formats
+        fid = str(f.get("format_id") or "").lower()
+        fmt = str(f.get("format") or "").lower()
+        note = str(f.get("format_note") or "").lower()
+        proto = str(f.get("protocol") or "").lower()
+
+        if fid.startswith("sb") or "storyboard" in fmt or "storyboard" in note:
+            return False
+        if "mhtml" in proto:
+            return False
+
+        # Keep only typical video containers
+        ext = (f.get("ext") or "").lower()
+        if ext and ext not in ("mp4", "webm", "mkv", "mov"):
+            return False
+
+        return True
+    except Exception:
+        return False
+
+
 def _best_video_format_under_height(info: Dict[str, Any], hmax: int) -> Optional[Dict[str, Any]]:
     formats = info.get("formats") or []
     vids: List[Dict[str, Any]] = []
@@ -1157,7 +1194,7 @@ def _select_youtube_formats(info: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     vids: List[Dict[str, Any]] = []
     for f in formats:
-        if f.get("vcodec") == "none":
+        if not _is_real_youtube_video_format(f):
             continue
         h = _yt_height(f)
         if h <= 0:
@@ -1598,7 +1635,7 @@ async def _task_show_youtube_formats(
         formats = _select_youtube_formats(info)
         try:
             raw_fmts = info.get("formats") or []
-            heights = sorted({int(f.get("height")) for f in raw_fmts if f.get("vcodec") != "none" and f.get("height")}, reverse=True)
+            heights = sorted({int(_yt_height(f) or 0) for f in raw_fmts if _is_real_youtube_video_format(f) and int(_yt_height(f) or 0) > 0}, reverse=True)
             log.info("YT formats: total=%d unique_video_heights=%s", len(raw_fmts), heights[:20])
         except Exception:
             pass
