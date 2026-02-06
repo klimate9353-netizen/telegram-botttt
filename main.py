@@ -52,7 +52,7 @@ import subprocess
 import zipfile
 import urllib.request
 import urllib.error
-from urllib.parse import urlsplit, urlunsplit, urlparse, quote
+from urllib.parse import urlsplit, urlunsplit, urlparse
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 
@@ -732,8 +732,6 @@ def _friendly_ydl_error(e: Exception, lang: str) -> str:
 _COOKIEFILE_PATH: Optional[str] = None
 _COOKIE_LOGGED: bool = False
 
-_PROXY_LOGGED: bool = False
-
 def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
     """Prepare a **writable** cookies.txt for yt-dlp and return its path.
 
@@ -867,7 +865,7 @@ def _ensure_cookiefile(workdir: Optional[str] = None) -> Optional[str]:
 
 def _normalize_proxy(raw: str) -> Optional[str]:
     """Validate and normalize proxy string from env.
-    Accepts: http(s)://user:pass@host:port , socks5://host:port , socks5h://host:port
+    Accepts: http(s)://user:pass@host:port , socks5://host:port , etc.
     Returns normalized proxy URL or None if invalid.
     """
     if not raw:
@@ -882,6 +880,7 @@ def _normalize_proxy(raw: str) -> Optional[str]:
         u = urlparse(p)
         if u.scheme not in ("http", "https", "socks5", "socks5h"):
             return None
+        # urlparse raises ValueError for bad port in py3.13 sometimes when accessing .port
         host = u.hostname
         if not host:
             return None
@@ -894,84 +893,6 @@ def _normalize_proxy(raw: str) -> Optional[str]:
     except Exception:
         return None
     return p
-
-
-def _mask_proxy(proxy_url: str) -> str:
-    """Mask credentials in proxy URL for safe logging."""
-    try:
-        u = urlparse(proxy_url)
-        host = u.hostname or ""
-        port = u.port
-        if port is None:
-            return f"{u.scheme}://{host}"
-        return f"{u.scheme}://***:***@{host}:{port}" if (u.username or u.password) else f"{u.scheme}://{host}:{port}"
-    except Exception:
-        return "proxy://***"
-
-
-def _get_proxy_from_env() -> Optional[str]:
-    """Get proxy URL from env and normalize it.
-
-    Supported env:
-      - YTDLP_PROXY (recommended): full URL, e.g. socks5h://user:pass@host:1080
-      - If YTDLP_PROXY contains placeholders USER/PASS/HOST/PORT, we try to substitute using:
-            YTDLP_PROXY_USER, YTDLP_PROXY_PASS, YTDLP_PROXY_HOST, YTDLP_PROXY_PORT
-            (optional) YTDLP_PROXY_SCHEME (default socks5h)
-      - If YTDLP_PROXY is empty, we can also build it from the parts above.
-      - Fallback (if you already have them set): ALL_PROXY / HTTPS_PROXY / HTTP_PROXY
-    """
-    raw = (os.getenv("YTDLP_PROXY") or "").strip()
-
-    # If user didn't set YTDLP_PROXY, fall back to standard proxy envs
-    if not raw:
-        raw = (os.getenv("ALL_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or "").strip()
-
-    # Helper: build from parts
-    def _build_from_parts() -> Optional[str]:
-        host = (os.getenv("YTDLP_PROXY_HOST") or "").strip()
-        port = (os.getenv("YTDLP_PROXY_PORT") or "").strip()
-        if not host or not port:
-            return None
-        scheme = (os.getenv("YTDLP_PROXY_SCHEME") or "socks5h").strip().lower()
-        if scheme not in ("http", "https", "socks5", "socks5h"):
-            scheme = "socks5h"
-        user = (os.getenv("YTDLP_PROXY_USER") or "").strip()
-        pwd = (os.getenv("YTDLP_PROXY_PASS") or "").strip()
-        auth = ""
-        if user or pwd:
-            auth = f"{quote(user)}:{quote(pwd)}@"
-        return f"{scheme}://{auth}{host}:{port}"
-
-    # If raw looks like template placeholders, try substitution
-    if raw and any(tok in raw for tok in ("USER", "PASS", "HOST", "PORT")):
-        repl = {
-            "USER": (os.getenv("YTDLP_PROXY_USER") or "").strip(),
-            "PASS": (os.getenv("YTDLP_PROXY_PASS") or "").strip(),
-            "HOST": (os.getenv("YTDLP_PROXY_HOST") or "").strip(),
-            "PORT": (os.getenv("YTDLP_PROXY_PORT") or "").strip(),
-        }
-        replaced = raw
-        for k, v in repl.items():
-            if k in replaced and v:
-                replaced = replaced.replace(k, v)
-        raw = replaced
-
-    # If still empty or still placeholder-like, attempt build-from-parts
-    if not raw or any(tok in raw for tok in ("USER", "PASS", "HOST", "PORT")):
-        built = _build_from_parts()
-        if built:
-            raw = built
-
-    proxy = _normalize_proxy(raw)
-    if proxy:
-        return proxy
-
-    # If user attempted to set YTDLP_PROXY but it's invalid, warn with actionable hint
-    if (os.getenv("YTDLP_PROXY") or "").strip():
-        log.warning(
-            "YTDLP_PROXY noto‘g‘ri formatda yoki PORT raqam emas. To‘g‘ri misol: socks5h://user:pass@host:1080 (yoki qismlarga bo‘lib: YTDLP_PROXY_HOST/PORT/USER/PASS)."
-        )
-    return None
 
 def _parse_js_runtimes_env(value: str) -> Dict[str, Dict[str, Any]]:
     """Parse YTDLP_JS_RUNTIME env into yt-dlp Python API format.
@@ -1020,13 +941,6 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
         "http_chunk_size": 10 * 1024 * 1024,
     }
 
-    # Debug: show yt-dlp warnings/verbose when requested
-    if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1":
-        # Allow yt-dlp to print useful warnings into logs when debugging.
-        opts["quiet"] = False
-        opts["no_warnings"] = False
-        opts["verbose"] = True
-
     # Env overrides (Railway/Render)
     try:
         st = int(os.getenv("YTDLP_SOCKET_TIMEOUT", "") or 0)
@@ -1059,7 +973,7 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
     if clients_env:
         clients = [c.strip() for c in re.split(r"[,\s]+", clients_env) if c.strip()]
     else:
-        clients = ["android", "ios", "web"]
+        clients = ["android"]  # default: only android (best chance to get full formats on cloud IP)
     opts["extractor_args"]["youtube"].setdefault("player_client", clients)
     # HLS (m3u8) manifestlari баъзи тармоқларда manifest.googlevideo.com timeout бериши мумкин.
     # Шунинг учун (default) HLS'ни ўчириб, DASH форматлар билан ишлаймиз.
@@ -1101,14 +1015,15 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
         except Exception as e:
             # Agar kutubxona/target mos kelmasa, bot yiqilib qolmasligi uchun impersonate'ni o‘chirib yuboramiz.
             log.warning("Impersonate sozlamasi o‘chirildi (xato: %s). YTDLP_IMPERSONATE=%s", e, imp)
-    # Proxy (ixtiyoriy)
-    proxy = _get_proxy_from_env()
+    # Proxy (ixtiyoriy): YTDLP_PROXY=http://user:pass@host:port
+    proxy_raw = (os.getenv("YTDLP_PROXY") or "").strip()
+    proxy = _normalize_proxy(proxy_raw)
     if proxy:
         opts["proxy"] = proxy
-        global _PROXY_LOGGED
-        if not _PROXY_LOGGED:
-            _PROXY_LOGGED = True
-            log.info("YTDLP proxy enabled: %s", _mask_proxy(proxy))
+    elif proxy_raw:
+        # noto‘g‘ri proxy bo‘lsa, bot yiqilmasin — proxy’ni e'tiborsiz qoldiramiz
+        log.warning("YTDLP_PROXY noto‘g‘ri formatda, e'tiborsiz qoldirildi: %s", proxy_raw)
+
 
     # ffmpeg (merge/MP3 uchun) — Railway/Render'да PATH'da bo'lishi mumkin
     try:
@@ -1163,7 +1078,7 @@ def _extract_info(url: str) -> Dict[str, Any]:
         if clients_env:
             clients = [c.strip() for c in re.split(r"[,\s]+", clients_env) if c.strip()]
         else:
-            clients = ["android", "ios", "web"]
+            clients = ["android"]  # default: only android (best chance to get full formats on cloud IP)
         ydl_opts["extractor_args"]["youtube"]["player_client"] = clients
     except Exception:
         pass
@@ -1175,26 +1090,6 @@ def _extract_info(url: str) -> Dict[str, Any]:
                     fs = info.get("formats") or []
                     hs = sorted({int(_yt_height(f) or 0) for f in fs if int(_yt_height(f) or 0) > 0})
                     log.info("YT formats debug: total=%s heights=%s", len(fs), hs[:25])
-                    try:
-                        protos = {}
-                        for ff in fs:
-                            p = (ff.get("protocol") or "").lower()
-                            protos[p] = protos.get(p, 0) + 1
-                        top_protos = sorted(protos.items(), key=lambda kv: kv[1], reverse=True)[:8]
-                        log.info("YT formats debug: protocol_counts=%s", top_protos)
-                        sample = []
-                        for ff in sorted(fs, key=lambda x: int(_yt_height(x) or 0), reverse=True)[:12]:
-                            sample.append({
-                                "id": ff.get("format_id"),
-                                "h": int(_yt_height(ff) or 0),
-                                "ext": ff.get("ext"),
-                                "proto": ff.get("protocol"),
-                                "vcodec": ff.get("vcodec"),
-                                "acodec": ff.get("acodec"),
-                            })
-                        log.info("YT formats debug: top_formats=%s", sample)
-                    except Exception:
-                        pass
                 except Exception:
                     pass
             return info
@@ -1659,6 +1554,14 @@ async def _task_show_youtube_formats(
     loop = asyncio.get_running_loop()
     try:
         info = await loop.run_in_executor(None, _extract_info, url)
+        # Debug: log raw heights from yt-dlp (helps detect IP/client restrictions)
+        try:
+            fmts_all = info.get('formats') or []
+            hs = sorted({(f.get('height') or 0) for f in fmts_all if (f.get('vcodec') and f.get('vcodec')!='none')})
+            logger.info(f"YT formats raw: total={len(fmts_all)} video_heights={hs[:30]}")
+        except Exception:
+            pass
+
         formats = _select_youtube_formats(info)
         try:
             raw_fmts = info.get("formats") or []
@@ -2192,14 +2095,6 @@ def build_app():
 
 def main() -> None:
     app = build_app()
-    # Startup diagnostics (useful for YouTube format issues)
-    try:
-        import shutil as _sh
-        log.info("ENV: RUN_MODE=%s YTDLP_YT_CLIENTS=%s YTDLP_SKIP_HLS=%s YTDLP_JS_RUNTIME=%s YTDLP_REMOTE_EJS=%s",
-                 os.getenv("RUN_MODE"), os.getenv("YTDLP_YT_CLIENTS"), os.getenv("YTDLP_SKIP_HLS"), os.getenv("YTDLP_JS_RUNTIME"), os.getenv("YTDLP_REMOTE_EJS"))
-        log.info("BINARIES: ffmpeg=%s deno=%s node=%s", bool(_sh.which("ffmpeg")), bool(_sh.which("deno")), bool(_sh.which("node")))
-    except Exception:
-        pass
     log.info("Bot started. Admins: %s", ",".join(str(x) for x in sorted(ADMIN_IDS)) if ADMIN_IDS else "(not set)")
 
     mode = RUN_MODE
