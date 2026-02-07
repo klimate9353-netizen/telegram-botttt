@@ -648,6 +648,68 @@ def _is_real_youtube_video_format(f: Dict[str, Any]) -> bool:
         if h < 100:
             return False
 
+
+
+def _yt_debug_dump_formats(info: Dict[str, Any]) -> None:
+    """Verbose formats diagnostics when YTDLP_DEBUG_FORMATS=1.
+
+    Goal: distinguish between real video formats, audio-only formats, and storyboard/preview formats
+    (which often show tiny 'heights' like 27/45/90/180).
+    """
+    try:
+        fs: List[Dict[str, Any]] = info.get("formats") or []
+        total = len(fs)
+
+        def _is_audio_only(f: Dict[str, Any]) -> bool:
+            return (f.get("vcodec") in (None, "none")) and (f.get("acodec") not in (None, "none"))
+
+        def _is_storyboard_like(f: Dict[str, Any]) -> bool:
+            h = int(_yt_height(f) or 0)
+            fid = str(f.get("format_id") or "").lower()
+            fmt = str(f.get("format") or "").lower()
+            note = str(f.get("format_note") or "").lower()
+            proto = str(f.get("protocol") or "").lower()
+            if fid.startswith("sb") or "storyboard" in fmt or "storyboard" in note:
+                return True
+            if h and h < 100:
+                return True
+            if "mhtml" in proto:
+                return True
+            return False
+
+        real = [f for f in fs if _is_real_youtube_video_format(f)]
+        audio = [f for f in fs if _is_audio_only(f)]
+        sb = [f for f in fs if _is_storyboard_like(f)]
+
+        heights_all = sorted({int(_yt_height(f) or 0) for f in fs if int(_yt_height(f) or 0) > 0})
+        heights_real = sorted({int(_yt_height(f) or 0) for f in real if int(_yt_height(f) or 0) > 0})
+
+        log.info(
+            "YT formats debug: total=%s real_video=%s audio_only=%s storyboard_like=%s heights_all=%s heights_real=%s",
+            total,
+            len(real),
+            len(audio),
+            len(sb),
+            heights_all[:25],
+            heights_real[:25],
+        )
+
+        # Print a small sample for quick troubleshooting
+        for f in fs[:12]:
+            log.info(
+                "YT fmt: id=%s ext=%s h=%s v=%s a=%s proto=%s note=%s fmt=%s",
+                f.get("format_id"),
+                f.get("ext"),
+                _yt_height(f),
+                f.get("vcodec"),
+                f.get("acodec"),
+                f.get("protocol"),
+                (f.get("format_note") or ""),
+                (str(f.get("format") or "")[:120]),
+            )
+    except Exception:
+        pass
+
         # Exclude obvious storyboard/thumbnail formats
         fid = str(f.get("format_id") or "").lower()
         fmt = str(f.get("format") or "").lower()
@@ -1140,6 +1202,24 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
         pass
 
 
+
+    # Debug summary
+    if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1":
+        try:
+            yt = (opts.get("extractor_args") or {}).get("youtube") or {}
+            clients = yt.get("player_client")
+            jsr = opts.get("js_runtimes") or {}
+            log.info(
+                "YTDLP debug cfg: player_client=%s js_runtimes=%s remote_components=%s proxy=%s cookiefile=%s",
+                clients,
+                list(jsr.keys()) if isinstance(jsr, dict) else jsr,
+                opts.get("remote_components"),
+                bool(opts.get("proxy")),
+                bool(opts.get("cookiefile")),
+            )
+        except Exception:
+            pass
+
     return opts
 
 def _extract_info(url: str) -> Dict[str, Any]:
@@ -1164,12 +1244,7 @@ def _extract_info(url: str) -> Dict[str, Any]:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1":
-                try:
-                    fs = info.get("formats") or []
-                    hs = sorted({int(_yt_height(f) or 0) for f in fs if int(_yt_height(f) or 0) > 0})
-                    log.info("YT formats debug: total=%s heights=%s", len(fs), hs[:25])
-                except Exception:
-                    pass
+                _yt_debug_dump_formats(info)
             return info
     except Exception as e:
         msg = str(e)
