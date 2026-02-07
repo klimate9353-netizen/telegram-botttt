@@ -637,18 +637,35 @@ def _yt_height(fmt: Dict[str, Any]) -> int:
 def _is_real_youtube_video_format(f: Dict[str, Any]) -> bool:
     """Return True only for real video formats (exclude audio-only and storyboard/preview formats).
 
-    YouTube sometimes returns storyboard/preview formats with tiny "heights" (e.g. 27/45/90/180).
+    YouTube sometimes returns storyboard/preview formats with tiny heights (e.g. 27/45/90/180).
     Those must NOT be treated as selectable video qualities.
     """
-    try:
-        if (f.get("vcodec") in (None, "none")):
-            return False
-        # height must be a sane video height
-        h = int(_yt_height(f) or 0)
-        if h < 100:
-            return False
+    # Must have a video codec
+    if f.get("vcodec") in (None, "none"):
+        return False
 
+    # Must have a sane video height
+    h = int(_yt_height(f) or 0)
+    if h < 100:
+        return False
 
+    # Exclude storyboard/preview (often mhtml images with format_id sb0/sb1/...)
+    fid = str(f.get("format_id") or "").lower()
+    fmt = str(f.get("format") or "").lower()
+    note = str(f.get("format_note") or "").lower()
+    ext = str(f.get("ext") or "").lower()
+
+    if fid.startswith("sb") or "storyboard" in fmt or "storyboard" in note:
+        return False
+    if ext in ("mhtml", "jpg", "jpeg", "png", "webp") and ("storyboard" in fmt or fid.startswith("sb")):
+        return False
+
+    # Only keep normal video containers/codecs
+    if ext and ext not in ("mp4", "webm", "mkv"):
+        # allow empty ext (rare) but drop known non-video ext
+        return False
+
+    return True
 
 def _yt_debug_dump_formats(info: Dict[str, Any]) -> None:
     """Verbose formats diagnostics when YTDLP_DEBUG_FORMATS=1.
