@@ -602,16 +602,39 @@ def _best_audio_size_bytes_meta(info: Dict[str, Any]) -> Tuple[int, bool]:
 
 
 def _format_size_is_approx(info: Dict[str, Any], f: Dict[str, Any]) -> bool:
-    """True if size is derived from filesize_approx or bitrate estimation (not exact filesize)."""
-    if int(f.get("filesize") or 0) > 0:
-        return False
+    """Heuristic: True when displayed size is not guaranteed exact.
+
+    yt-dlp often shows FILESIZE as:
+      - exact `filesize` for some direct HTTPS formats
+      - `filesize_approx` or a bitrate*duration estimate for many DASH/HLS formats
+    Even when `filesize` is present for HLS (m3u8), it may still be effectively approximate.
+    """
+    # HLS/m3u8 is almost always approximate in practice
+    proto = str(f.get("protocol") or "").lower()
+    if "m3u8" in proto:
+        return True
+    # Some formats carry manifest URLs (HLS/DASH). Treat as approximate.
+    if f.get("manifest_url") or f.get("fragments"):
+        return True
+
+    # If yt-dlp explicitly tells us it's approximate
     if int(f.get("filesize_approx") or 0) > 0:
         return True
+
+    # If we have an exact filesize, consider it exact for non-HLS
+    if int(f.get("filesize") or 0) > 0:
+        return False
+
+    # Otherwise, if we can only estimate from bitrate * duration, it's approximate
     dur = info.get("duration") or f.get("duration")
-    kbps = float(f.get("tbr") or f.get("vbr") or 0.0)
+    kbps = float(f.get("tbr") or f.get("vbr") or f.get("abr") or 0.0)
     if kbps > 0 and dur:
         return True
-    return True
+
+    # Unknown size source -> don't claim it's approximate (we usually won't display size anyway)
+    return False
+
+
 
 def _yt_height(fmt: Dict[str, Any]) -> int:
     """Best-effort parse of a format's height.
