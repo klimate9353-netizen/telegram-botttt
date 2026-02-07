@@ -110,6 +110,9 @@ CALLBACK_CACHE_MAX = 3000
 # Local Bot API server ишлатсангиз, бу чекловни каттароқ қила оласиз.
 TG_MAX_UPLOAD_MB = int((os.getenv("TG_MAX_UPLOAD_MB") or ("1900" if (os.getenv("LOCAL_BOT_API_URL") or "").strip() else "49")).strip() or "49")
 
+# YouTube format tanlashda maksimal ruxsat etilgan hajm (MB). Katta bo'lsa — formatni tanlashga qo'ymaymiz.
+YT_MAX_MB = int((os.getenv("YT_MAX_MB") or "150").strip() or "150")
+
 # YouTube видеолар учун Telegram file_id кеш (RAM). Шу орқали такрорий сўровларда 1 секундда юборилади.
 YOUTUBE_FILEID_CACHE: Dict[str, str] = {}
 YOUTUBE_FILEID_CACHE_MAX = 5000
@@ -224,6 +227,11 @@ TEXT = {
         LANG_UZ: "❌ Formatlarni olishda xatolik: {err}",
         LANG_RU: "❌ Ошибка при получении форматов: {err}",
     },
+    "yt_too_big": {
+        LANG_UZ: "⚠️ Bu format juda katta: {size}MB. Maksimal ruxsat etilgan: {max}MB. Iltimos, boshqa format tanlang.",
+        LANG_RU: "⚠️ Этот формат слишком большой: {size}MB. Максимально разрешено: {max}MB. Пожалуйста, выберите другой формат.",
+    },
+
 
     "err_filename_too_long": {
         LANG_UZ: "❌ Fayl nomi juda uzun bo‘lib кетди (server cheklovi). Boshqa variantni tanlang yoki linkni qayta yuboring.",
@@ -1766,6 +1774,8 @@ async def _task_show_youtube_formats(
                 "url": url, "kind": "video", "format_id": fmt_id,
                 "has_audio": has_audio,
                 "yt_key": yt_key,
+                "total_bytes": int(total_bytes) if total_bytes else 0,
+                "total_bytes": int(total_bytes) if total_bytes else 0,
                 "origin_chat_id": origin_chat_id, "origin_message_id": origin_message_id,
                 "lang": lang,
             })
@@ -1870,13 +1880,7 @@ async def on_download_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
             pass
         return
 
-    # Payload topildi — endi format menyusini (tugmalar) xabarini avtomat o‘chirib yuboramiz
-    try:
-        if q.message is not None:
-            await context.bot.delete_message(chat_id=q.message.chat_id, message_id=q.message.message_id)
-    except Exception:
-        pass
-
+    # Payload topildi
     url = payload["url"]
     kind = payload["kind"]
     format_id = payload.get("format_id")
@@ -1884,11 +1888,37 @@ async def on_download_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     yt_key = payload.get("yt_key")
     lang = payload.get("lang") or lang
 
+    # YouTube format hajm cheklovi (default: 150MB). Katta bo'lsa — yuklamaymiz va format menyusini o'chirmaymiz.
+    if kind == "video":
+        total_bytes = int(payload.get("total_bytes") or 0)
+        if total_bytes > 0 and total_bytes > (YT_MAX_MB * 1024 * 1024):
+            size_mb = int((total_bytes + (1024 * 1024 - 1)) // (1024 * 1024))
+            msg_text = _t(lang, "yt_too_big", size=size_mb, max=YT_MAX_MB)
+            try:
+                await q.answer(msg_text, show_alert=True)
+            except Exception:
+                pass
+            # Ba'zi klientlarda alert ko'rinmasligi mumkin — shuning uchun reply bilan ham yuboramiz
+            try:
+                target_chat_id = int(payload.get("origin_chat_id") or (q.message.chat_id if q.message else update.effective_chat.id))
+                reply_to = int(payload.get("origin_message_id")) if str(payload.get("origin_message_id")).isdigit() else None
+                await context.bot.send_message(chat_id=target_chat_id, text=msg_text, reply_to_message_id=reply_to)
+            except Exception:
+                pass
+            return
+
+    # Format menyusini (tugmalar) xabarini avtomat o‘chirib yuboramiz
+    try:
+        if q.message is not None:
+            await context.bot.delete_message(chat_id=q.message.chat_id, message_id=q.message.message_id)
+    except Exception:
+        pass
+
     origin_chat_id = int(payload.get("origin_chat_id") or (q.message.chat_id if q.message else update.effective_chat.id))
     origin_message_id = payload.get("origin_message_id")
     reply_to_message_id = int(origin_message_id) if str(origin_message_id).isdigit() else None
 
-    # "⏳ ..." ogohlantirishni alohida yuboramiz va yuklab bo‘lganda o‘chirib tashlaymiz
+    # "⏳ ..." ogohlantirishni alohida yuboramiz ва yuklab bo‘lganda o‘chirib tashlaymiz
     status_chat_id: Optional[int] = None
     status_message_id: Optional[int] = None
     try:
@@ -1915,6 +1945,7 @@ async def on_download_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         status_chat_id=status_chat_id,
         status_message_id=status_message_id,
     ))
+
 async def _send_audio_with_retry(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int,
