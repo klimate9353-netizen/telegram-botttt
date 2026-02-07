@@ -573,6 +573,46 @@ def _best_audio_size_bytes(info: Dict[str, Any]) -> int:
 
 
 
+
+def _best_audio_size_bytes_meta(info: Dict[str, Any]) -> Tuple[int, bool]:
+    """Return (size_bytes, is_approx) for the best audio stream."""
+    formats = info.get("formats") or []
+    dur = info.get("duration")
+    auds = [f for f in formats if f.get("vcodec") == "none" and f.get("acodec") != "none"]
+    if not auds:
+        return (0, True)
+
+    def score(a: Dict[str, Any]) -> Tuple[float, int]:
+        abr = float(a.get("abr") or 0.0)
+        tbr = float(a.get("tbr") or 0.0)
+        ext = (a.get("ext") or "").lower()
+        ext_score = 2 if ext == "m4a" else (1 if ext in ("mp4", "aac") else 0)
+        return (ext_score * 1000 + max(abr, tbr), int(a.get("filesize") or a.get("filesize_approx") or 0))
+
+    best = sorted(auds, key=score, reverse=True)[0]
+    fs = int(best.get("filesize") or 0)
+    if fs > 0:
+        return (fs, False)
+    fsa = int(best.get("filesize_approx") or 0)
+    if fsa > 0:
+        return (fsa, True)
+    kbps = float(best.get("tbr") or best.get("abr") or 0.0)
+    est = _estimate_bytes_from_kbps(kbps, dur)
+    return (est, True)
+
+
+def _format_size_is_approx(info: Dict[str, Any], f: Dict[str, Any]) -> bool:
+    """True if size is derived from filesize_approx or bitrate estimation (not exact filesize)."""
+    if int(f.get("filesize") or 0) > 0:
+        return False
+    if int(f.get("filesize_approx") or 0) > 0:
+        return True
+    dur = info.get("duration") or f.get("duration")
+    kbps = float(f.get("tbr") or f.get("vbr") or 0.0)
+    if kbps > 0 and dur:
+        return True
+    return True
+
 def _yt_height(fmt: Dict[str, Any]) -> int:
     """Best-effort parse of a format's height.
 
@@ -1768,6 +1808,16 @@ async def _task_show_youtube_formats(
 
             total_bytes = _video_total_size_bytes_strict(info, fmt_for_size)
             size = human_mb_compact(total_bytes) if total_bytes > 0 else ""
+            # If size is approximate (filesize_approx/bitrate estimate), show "~" to avoid confusion.
+            approx = False
+            if total_bytes > 0:
+                approx = _format_size_is_approx(info, fmt_for_size)
+                if (fmt_for_size.get("acodec") == "none") or not fmt_for_size.get("acodec"):
+                    _a_sz, _a_apx = _best_audio_size_bytes_meta(info)
+                    if _a_sz > 0 and _a_apx:
+                        approx = True
+            if size and approx:
+                size = "~" + size
             label = f"{label_h}p - {size}" if size else f"{label_h}p"
 
             token = _cache_put({
