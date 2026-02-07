@@ -111,11 +111,18 @@ CALLBACK_CACHE_MAX = 3000
 TG_MAX_UPLOAD_MB = int((os.getenv("TG_MAX_UPLOAD_MB") or ("1900" if (os.getenv("LOCAL_BOT_API_URL") or "").strip() else "49")).strip() or "49")
 
 # YouTube format tanlashda maksimal ruxsat etilgan hajm (MB). Katta bo'lsa — formatni tanlashga qo'ymaymiz.
-YT_MAX_MB = int((os.getenv("YT_MAX_MB") or "150").strip() or "150")
+DL_MAX_MB = int((os.getenv("DL_MAX_MB") or "130").strip() or "130")
+
+# YouTube format tanlashda maksimal ruxsat etilgan hajm (MB). Katta bo'lsa — formatni tanlashga qo'ymaymiz.
+YT_MAX_MB = int((os.getenv("YT_MAX_MB") or str(DL_MAX_MB)).strip() or str(DL_MAX_MB))
 
 # YouTube видеолар учун Telegram file_id кеш (RAM). Шу орқали такрорий сўровларда 1 секундда юборилади.
 YOUTUBE_FILEID_CACHE: Dict[str, str] = {}
 YOUTUBE_FILEID_CACHE_MAX = 5000
+
+# Universal file_id кеш (YouTube + boshqa тармоқлар). Key: normalized_url+kind+format.
+FILEID_CACHE: Dict[str, str] = {}
+FILEID_CACHE_MAX = 15000
 
 RUN_MODE = (os.getenv("RUN_MODE") or "").strip().lower()  # "webhook" or "polling"
 def _guess_public_base_url() -> str:
@@ -214,6 +221,10 @@ TEXT = {
     "btn_expired": {
         LANG_UZ: "❌ Bu tugma eskirib qolgan. Iltimos linkni qayta yuboring.",
         LANG_RU: "❌ Эта кнопка устарела. Пожалуйста, отправьте ссылку ещё раз.",
+    },
+    "unsupported_url": {
+        LANG_UZ: "❌ Bu havola qo‘llab-quvvatlanmaydi. Faqat YouTube, TikTok, Instagram, Facebook va OK.ru havolalarini yuboring.",
+        LANG_RU: "❌ Эта ссылка не поддерживается. Отправляйте только ссылки YouTube, TikTok, Instagram, Facebook и OK.ru.",
     },
     "downloading_answer": {
         LANG_UZ: "⏳ Yuklab olinmoqda...",
@@ -517,6 +528,38 @@ def is_tiktok(url: str) -> bool:
 def is_tiktok_photo(url: str) -> bool:
     u = (url or "").lower()
     return ("tiktok.com" in u) and ("/photo/" in u)
+
+
+def is_instagram(url: str) -> bool:
+    u = (url or "").lower()
+    return ("instagram.com" in u) or ("instagr.am" in u)
+
+def is_facebook(url: str) -> bool:
+    u = (url or "").lower()
+    return ("facebook.com" in u) or ("fb.watch" in u) or ("fb.com" in u) or ("m.facebook.com" in u)
+
+def is_okru(url: str) -> bool:
+    u = (url or "").lower()
+    return ("ok.ru" in u) or ("odnoklassniki.ru" in u)
+
+def is_supported_url(url: str) -> bool:
+    return is_youtube(url) or is_tiktok(url) or is_instagram(url) or is_facebook(url) or is_okru(url)
+
+def _normalize_url_for_cache(url: str) -> str:
+    """Cache uchun URL ni barqarorlashtirish: query/fragment olib tashlanadi, netloc lower-case."""
+    try:
+        parts = urlsplit(url)
+        scheme = (parts.scheme or "https").lower()
+        netloc = (parts.netloc or "").lower()
+        path = parts.path or ""
+        return urlunsplit((scheme, netloc, path, "", ""))
+    except Exception:
+        return (url or "").strip()
+
+def _make_fileid_cache_key(url: str, kind: str, format_id: Optional[str] = None, yt_key: Optional[str] = None) -> str:
+    if yt_key:
+        return f"{yt_key}:{kind}"
+    return f"u:{_normalize_url_for_cache(url)}:{kind}:{format_id or ''}"
 
 
 def _strip_query(url: str) -> str:
@@ -1662,6 +1705,12 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     uid = update.effective_user.id if update.effective_user else None
     lang = await get_user_lang(update, context)
 
+    # Faqat ruxsat etilgan тармоқлар: YouTube, TikTok, Instagram, Facebook, OK.ru
+    chk_url = url_eff if is_tiktok(url) else url
+    if not is_supported_url(chk_url):
+        await update.message.reply_text(_t(lang, "unsupported_url"))
+        return
+
     if not is_admin(uid):
         await update.message.reply_text(_t(lang, "not_admin"))
         return
@@ -2025,23 +2074,24 @@ async def _send_audio_with_retry(
     path: Path,
     caption: str,
     reply_to_message_id: Optional[int],
-) -> None:
+) -> Optional[Message]:
     last_exc: Optional[Exception] = None
     for _ in range(2):
         try:
             with open(path, "rb") as f:
-                await context.bot.send_audio(
+                msg = await context.bot.send_audio(
                     chat_id=chat_id,
                     audio=f,
                     caption=caption,
                     reply_to_message_id=reply_to_message_id,
                 )
-            return
+            return msg
         except TimedOut as e:
             last_exc = e
             await asyncio.sleep(2)
     if last_exc:
         raise last_exc
+    raise RuntimeError("send_audio failed")
 
 async def _send_video_with_retry(
     context: ContextTypes.DEFAULT_TYPE,
@@ -2233,15 +2283,100 @@ async def _task_download_and_send(
             caption = _t(lang, "caption_suffix")
 
             if kind == "audio":
+                # file_id кеш: шу URL аввал юборилган бўлса, қайта юклаб олмасдан юбориш
+                key = _make_fileid_cache_key(url, kind)
+                fid = FILEID_CACHE.get(key)
+                if fid:
+                    try:
+                        await context.bot.send_audio(
+                            chat_id=chat_id,
+                            audio=fid,
+                            caption=caption,
+                            reply_to_message_id=reply_to_message_id,
+                        )
+                        return
+                    except Exception:
+                        FILEID_CACHE.pop(key, None)
+
                 path: Path = await loop.run_in_executor(None, _download_audio, url, td)
-                await _send_audio_with_retry(context, chat_id, path, caption, reply_to_message_id)
+
+                # Bot ички лимити (RAM/traffic тежаш): 130MB (default) дан катта бўлса юбормаймиз
+                try:
+                    size_mb = path.stat().st_size / (1024 * 1024)
+                except Exception:
+                    size_mb = 0.0
+                if DL_MAX_MB > 0 and size_mb > DL_MAX_MB:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=_t(lang, "yt_too_big", size=int(size_mb + 0.999), max=DL_MAX_MB),
+                        reply_to_message_id=reply_to_message_id,
+                    )
+                    return
+
+                msg = await _send_audio_with_retry(context, chat_id, path, caption, reply_to_message_id)
+                try:
+                    if msg and getattr(msg, "audio", None) is not None:
+                        FILEID_CACHE[key] = msg.audio.file_id
+                        if len(FILEID_CACHE) > FILEID_CACHE_MAX:
+                            FILEID_CACHE.pop(next(iter(FILEID_CACHE.keys())), None)
+                except Exception:
+                    pass
 
             elif kind == "tt_photo_audio":
+                key = _make_fileid_cache_key(url, kind)
+                fid = FILEID_CACHE.get(key)
+                if fid:
+                    try:
+                        await context.bot.send_audio(
+                            chat_id=chat_id,
+                            audio=fid,
+                            caption=caption,
+                            reply_to_message_id=reply_to_message_id,
+                        )
+                        return
+                    except Exception:
+                        FILEID_CACHE.pop(key, None)
+
                 path = await loop.run_in_executor(None, _download_tiktok_photo_audio, url, td)
-                await _send_audio_with_retry(context, chat_id, path, caption, reply_to_message_id)
+
+                try:
+                    size_mb = path.stat().st_size / (1024 * 1024)
+                except Exception:
+                    size_mb = 0.0
+                if DL_MAX_MB > 0 and size_mb > DL_MAX_MB:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=_t(lang, "yt_too_big", size=int(size_mb + 0.999), max=DL_MAX_MB),
+                        reply_to_message_id=reply_to_message_id,
+                    )
+                    return
+
+                msg = await _send_audio_with_retry(context, chat_id, path, caption, reply_to_message_id)
+                try:
+                    if msg and getattr(msg, "audio", None) is not None:
+                        FILEID_CACHE[key] = msg.audio.file_id
+                        if len(FILEID_CACHE) > FILEID_CACHE_MAX:
+                            FILEID_CACHE.pop(next(iter(FILEID_CACHE.keys())), None)
+                except Exception:
+                    pass
 
             else:
-                # 1) Агар шу видео+формат аввал юборилган бўлса — Telegram file_id билан дарҳол юборамиз.
+                # 1) Universal file_id кеш (барча тармоқлар). Агар шу URL/формат аввал юборилган бўлса — дарҳол юборилади.
+                key = _make_fileid_cache_key(url, "video", format_id=format_id, yt_key=yt_key)
+                fid = FILEID_CACHE.get(key)
+                if fid:
+                    try:
+                        await context.bot.send_video(
+                            chat_id=chat_id,
+                            video=fid,
+                            supports_streaming=True,
+                            caption=caption,
+                            reply_to_message_id=reply_to_message_id,
+                        )
+                        return
+                    except Exception:
+                        FILEID_CACHE.pop(key, None)
+
                 if yt_key:
                     fid_cached = YOUTUBE_FILEID_CACHE.get(yt_key)
                     if fid_cached:
@@ -2266,6 +2401,15 @@ async def _task_download_and_send(
                 except Exception:
                     size_mb = 0.0
 
+                # Bot ички лимити: 130MB (default). Telegram лимити катта бўлса ҳам шу ерда тўхтатамиз.
+                if DL_MAX_MB > 0 and size_mb > DL_MAX_MB:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=_t(lang, "yt_too_big", size=int(size_mb + 0.999), max=DL_MAX_MB),
+                        reply_to_message_id=reply_to_message_id,
+                    )
+                    return
+
                 if TG_MAX_UPLOAD_MB > 0 and size_mb > TG_MAX_UPLOAD_MB:
                     await context.bot.send_message(
                         chat_id=chat_id,
@@ -2283,6 +2427,13 @@ async def _task_download_and_send(
 
                 # 4) Юбориш ва file_id кешлаш
                 msg = await _send_video_with_retry(context, chat_id, path, caption, reply_to_message_id)
+                try:
+                    if msg and getattr(msg, "video", None) is not None:
+                        FILEID_CACHE[key] = msg.video.file_id
+                        if len(FILEID_CACHE) > FILEID_CACHE_MAX:
+                            FILEID_CACHE.pop(next(iter(FILEID_CACHE.keys())), None)
+                except Exception:
+                    pass
                 if yt_key and msg and getattr(msg, "video", None) is not None:
                     try:
                         YOUTUBE_FILEID_CACHE[yt_key] = msg.video.file_id
