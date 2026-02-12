@@ -1864,7 +1864,7 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     lang = await get_user_lang(update, context)
 
     # Faqat ruxsat etilgan тармоқлар: YouTube, TikTok, Instagram, Facebook, OK.ru
-    chk_url = url_eff if is_tiktok(url) else url
+    chk_url = url_eff if is_tiktok(url_eff) else url_eff
     if not is_supported_url(chk_url):
         await update.message.reply_text(_t(lang, "unsupported_url"))
         return
