@@ -98,6 +98,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # Fallback json storage (cloud серверда тавсия этилмайди)
 USERS_FILE = DATA_DIR / "users.json"
 PREFS_FILE = DATA_DIR / "prefs.json"
+CHATS_FILE = DATA_DIR / "chats.json"
 
 DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 
@@ -345,6 +346,22 @@ TEXT = {
         LANG_UZ: "📣 BroadcastPost boshlandi. Users: {n}",
         LANG_RU: "📣 Пересылка поста началась. Пользователей: {n}",
     },
+    "usage_broadcastgroup": {
+        LANG_UZ: "Ishlatish: /broadcastgroup xabar_matni",
+        LANG_RU: "Использование: /broadcastgroup текст_сообщения",
+    },
+    "usage_broadcastpostgroup": {
+        LANG_UZ: "Ishlatish: Kerakli postga reply qiling va /broadcastpostgroup yozing.",
+        LANG_RU: "Использование: Ответьте на нужный пост и отправьте /broadcastpostgroup.",
+    },
+    "bcgroup_started": {
+        LANG_UZ: "📣 Guruhlarga broadcast boshlandi. Groups: {n}",
+        LANG_RU: "📣 Рассылка в группы началась. Групп: {n}",
+    },
+    "bcpostgroup_started": {
+        LANG_UZ: "📣 Guruhlarga post yuborish boshlandi. Groups: {n}",
+        LANG_RU: "📣 Пересылка поста в группы началась. Групп: {n}",
+    },
     "caption_suffix": {
         LANG_UZ: f"{BOT_USERNAME_TAG} da yuklab olindi",
         LANG_RU: f"Скачано в {BOT_USERNAME_TAG}",
@@ -403,6 +420,43 @@ def _get_users_json() -> List[int]:
     data = _load_users_json()
     return [int(x) for x in (data.get("users") or []) if str(x).isdigit()]
 
+def _load_groups_json() -> Dict[str, Any]:
+    """
+    Stores groups where bot has been seen (best-effort).
+    Format:
+      - old: [-100..., -100...]
+      - new: {"groups":[-100...]}
+    """
+    raw = _json_load(CHATS_FILE, {"groups": []})
+    if isinstance(raw, list):
+        return {"groups": raw}
+    if isinstance(raw, dict):
+        groups = raw.get("groups")
+        if not isinstance(groups, list):
+            raw["groups"] = []
+        return raw
+    return {"groups": []}
+
+def _add_group_json(chat_id: int) -> None:
+    data = _load_groups_json()
+    groups = set()
+    for x in (data.get("groups") or []):
+        s = str(x)
+        if s.lstrip("-").isdigit():
+            groups.add(int(s))
+    groups.add(int(chat_id))
+    data["groups"] = sorted(groups)
+    _json_save(CHATS_FILE, data)
+
+def _get_groups_json() -> List[int]:
+    data = _load_groups_json()
+    out: List[int] = []
+    for x in (data.get("groups") or []):
+        s = str(x)
+        if s.lstrip("-").isdigit():
+            out.append(int(s))
+    return out
+
 def _load_prefs_json() -> Dict[str, Any]:
     raw = _json_load(PREFS_FILE, {})
     return raw if isinstance(raw, dict) else {}
@@ -434,7 +488,12 @@ class UserStore:
         if "sslmode=require" in DATABASE_URL.lower() or (os.getenv("PGSSLMODE") or "").lower() == "require":
             ssl_opt = True
 
-        self.pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5, ssl=ssl_opt)
+        try:
+            self.pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5, ssl=ssl_opt)
+        except Exception as e:
+            log.error("DB ulanishida xatolik (fallback: JSON): %s", e)
+            self.pool = None
+            return
         await self.pool.execute(
             """
             CREATE TABLE IF NOT EXISTS bot_users (
@@ -449,6 +508,17 @@ class UserStore:
             """
         )
         await self.pool.execute("CREATE INDEX IF NOT EXISTS bot_users_last_seen_idx ON bot_users(last_seen);")
+        await self.pool.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_chats (
+              chat_id    BIGINT PRIMARY KEY,
+              chat_type  TEXT NOT NULL,
+              title      TEXT,
+              last_seen  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """
+        )
+        await self.pool.execute("CREATE INDEX IF NOT EXISTS bot_chats_last_seen_idx ON bot_chats(last_seen);")
         log.info("DB tayyor: bot_users jadvali tekshirildi/yaratildi.")
 
     async def close(self) -> None:
@@ -520,6 +590,49 @@ class UserStore:
             rows = await self.pool.fetch("SELECT user_id FROM bot_users")
             return [int(r["user_id"]) for r in rows]  # type: ignore[index]
         return _get_users_json()
+
+    async def touch_chat(self, chat) -> None:
+        """Insert/update group chat where the bot has been seen (best-effort)."""
+        try:
+            cid = int(getattr(chat, "id"))
+        except Exception:
+            return
+        ctype = (getattr(chat, "type", "") or "").lower()
+        if ctype not in ("group", "supergroup"):
+            return
+        title = getattr(chat, "title", None)
+
+        if self.pool:
+            try:
+                await self.pool.execute(
+                    """
+                    INSERT INTO bot_chats (chat_id, chat_type, title, last_seen)
+                    VALUES ($1, $2, $3, NOW())
+                    ON CONFLICT (chat_id) DO UPDATE SET
+                      chat_type = EXCLUDED.chat_type,
+                      title     = EXCLUDED.title,
+                      last_seen = NOW();
+                    """,
+                    cid,
+                    ctype,
+                    title,
+                )
+            except Exception:
+                # do not crash bot on DB errors
+                pass
+        else:
+            _add_group_json(cid)
+
+    async def get_groups(self) -> List[int]:
+        """Return known group/supergroup chat_ids (best-effort)."""
+        if self.pool:
+            try:
+                rows = await self.pool.fetch("SELECT chat_id FROM bot_chats WHERE chat_type IN ('group','supergroup')")
+                return [int(r["chat_id"]) for r in rows]  # type: ignore[index]
+            except Exception:
+                return _get_groups_json()
+        return _get_groups_json()
+
 
 
 STORE = UserStore()
@@ -1863,12 +1976,6 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     uid = update.effective_user.id if update.effective_user else None
     lang = await get_user_lang(update, context)
 
-    # Faqat ruxsat etilgan тармоқлар: YouTube, TikTok, Instagram, Facebook, OK.ru
-    chk_url = url_eff if is_tiktok(url_eff) else url_eff
-    if not is_supported_url(chk_url):
-        await update.message.reply_text(_t(lang, "unsupported_url"))
-        return
-
     if not is_admin(uid):
         await update.message.reply_text(_t(lang, "not_admin"))
         return
@@ -1887,7 +1994,7 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(_t(lang, "bc_started", n=len(users)))
     for u in users:
         try:
-            await context.bot.send_message(chat_id=u, text=msg)
+            await context.bot.send_message(chat_id=u, text=msg, disable_web_page_preview=True)
             sent += 1
         except Exception:
             failed += 1
@@ -1921,12 +2028,77 @@ async def cmd_broadcastpost(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text(_t(lang, "bc_done", sent=sent, failed=failed))
 
 
+async def cmd_broadcastgroup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    uid = update.effective_user.id if update.effective_user else None
+    lang = await get_user_lang(update, context)
+
+    if not is_admin(uid):
+        await update.message.reply_text(_t(lang, "not_admin"))
+        return
+
+    text = update.message.text or ""
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await update.message.reply_text(_t(lang, "usage_broadcastgroup"))
+        return
+
+    msg = parts[1].strip()
+    groups = await STORE.get_groups()
+    sent = 0
+    failed = 0
+
+    await update.message.reply_text(_t(lang, "bcgroup_started", n=len(groups)))
+    for cid in groups:
+        try:
+            await context.bot.send_message(chat_id=cid, text=msg, disable_web_page_preview=True)
+            sent += 1
+        except Exception:
+            failed += 1
+    await update.message.reply_text(_t(lang, "bc_done", sent=sent, failed=failed))
+
+
+async def cmd_broadcastpostgroup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    uid = update.effective_user.id if update.effective_user else None
+    lang = await get_user_lang(update, context)
+
+    if not is_admin(uid):
+        await update.message.reply_text(_t(lang, "not_admin"))
+        return
+    if not update.message.reply_to_message:
+        await update.message.reply_text(_t(lang, "usage_broadcastpostgroup"))
+        return
+
+    src: Message = update.message.reply_to_message
+    groups = await STORE.get_groups()
+    sent = 0
+    failed = 0
+
+    await update.message.reply_text(_t(lang, "bcpostgroup_started", n=len(groups)))
+    for cid in groups:
+        try:
+            await context.bot.copy_message(chat_id=cid, from_chat_id=src.chat_id, message_id=src.message_id)
+            sent += 1
+        except Exception:
+            failed += 1
+    await update.message.reply_text(_t(lang, "bc_done", sent=sent, failed=failed))
+
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
 
     # user touch (langni majburan o'zgartirmaymiz)
     await STORE.touch_user(update.effective_user)
+
+    # chat touch (guruhlar ro‘yxatini saqlash: /broadcastgroup uchun)
+    try:
+        if update.effective_chat:
+            await STORE.touch_chat(update.effective_chat)
+    except Exception:
+        pass
 
     url = extract_first_url(update.message.text or "")
     if not url:
@@ -2653,6 +2825,8 @@ def build_app():
     app.add_handler(CommandHandler("cacheprune", cmd_cacheprune))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
     app.add_handler(CommandHandler("broadcastpost", cmd_broadcastpost))
+    app.add_handler(CommandHandler("broadcastgroup", cmd_broadcastgroup))
+    app.add_handler(CommandHandler("broadcastpostgroup", cmd_broadcastpostgroup))
 
     app.add_handler(CallbackQueryHandler(on_lang_button, pattern=r"^lang\|"))
     app.add_handler(CallbackQueryHandler(on_download_button, pattern=r"^dl\|"))
