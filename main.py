@@ -1481,19 +1481,20 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
     if cookiefile:
         opts["cookiefile"] = cookiefile
 
-    # Let yt-dlp choose the supported YouTube clients.  Forcing web/android/ios
-    # makes YouTube return only the 360p fallback on many datacenter IPs because
-    # those clients require a per-video PO Token for DASH formats.
+    # The bgutil provider supplies a fresh PO Token for mweb.  This restores
+    # separate DASH video/audio formats that YouTube hides behind bot checks.
     opts.setdefault("extractor_args", {})
     opts["extractor_args"].setdefault("youtube", {})
     clients_env = (os.getenv("YTDLP_YT_CLIENTS") or "").strip()
-    clients = ["default"]
-    if clients_env and clients_env.lower() not in ("default",):
+    clients = ["mweb"]
+    if clients_env and clients_env.lower() not in ("mweb",):
         log.warning(
-            "YTDLP_YT_CLIENTS=%s ignored: using yt-dlp default clients to keep DASH formats available",
+            "YTDLP_YT_CLIENTS=%s ignored: using mweb with the PO Token provider",
             clients_env,
         )
     opts["extractor_args"]["youtube"]["player_client"] = clients
+    pot_base_url = (os.getenv("BGUTIL_POT_BASE_URL") or "http://127.0.0.1:4416").strip()
+    opts["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [pot_base_url]}
     # HLS (m3u8) manifestlari баъзи тармоқларда manifest.googlevideo.com timeout бериши мумкин.
     # Шунинг учун (default) HLS'ни ўчириб, DASH форматлар билан ишлаймиз.
     # Ўчириб қўйиш: YTDLP_SKIP_HLS=0
@@ -1607,18 +1608,20 @@ def _extract_info(url: str) -> Dict[str, Any]:
     ydl_opts = build_ydl_base(outtmpl="%(title)s.%(ext)s", workdir=tempfile.gettempdir())
     ydl_opts["ignore_no_formats_error"] = True
     ydl_opts["skip_download"] = True
-    # This must match build_ydl_base(): a forced web/android/ios client list can
-    # hide DASH formats and leave only the 360p progressive fallback.
+    # This must match build_ydl_base(): mweb receives a fresh PO Token from the
+    # local bgutil provider, allowing DASH formats to be returned.
     try:
         ydl_opts.setdefault("extractor_args", {})
         ydl_opts["extractor_args"].setdefault("youtube", {})
         clients_env = (os.getenv("YTDLP_YT_CLIENTS") or "").strip()
-        if clients_env and clients_env.lower() not in ("default",):
+        if clients_env and clients_env.lower() not in ("mweb",):
             log.warning(
-                "YTDLP_YT_CLIENTS=%s ignored while extracting formats; using yt-dlp defaults",
+                "YTDLP_YT_CLIENTS=%s ignored while extracting formats; using mweb with the PO Token provider",
                 clients_env,
             )
-        ydl_opts["extractor_args"]["youtube"]["player_client"] = ["default"]
+        ydl_opts["extractor_args"]["youtube"]["player_client"] = ["mweb"]
+        pot_base_url = (os.getenv("BGUTIL_POT_BASE_URL") or "http://127.0.0.1:4416").strip()
+        ydl_opts["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [pot_base_url]}
     except Exception:
         pass
     try:
