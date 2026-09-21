@@ -17,7 +17,7 @@ if ! kill -0 "${provider_pid}" 2>/dev/null; then
   exit 1
 fi
 
-python main.py &
+python /app/main.py &
 bot_pid=$!
 
 shutdown() {
