@@ -1586,11 +1586,6 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
     # Debug summary
     if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1":
         try:
-            # Do not hide yt-dlp/provider errors while diagnosing missing formats.
-            # Normal production runs remain quiet.
-            opts["quiet"] = False
-            opts["no_warnings"] = False
-            opts["verbose"] = True
             yt = (opts.get("extractor_args") or {}).get("youtube") or {}
             clients = yt.get("player_client")
             jsr = opts.get("js_runtimes") or {}
@@ -1611,9 +1606,10 @@ def _extract_info(url: str) -> Dict[str, Any]:
     # Formatlarni ko‘rsatish uchun to‘liq "process=True" kerak bo‘ladi,
     # aks holda ba'zan faqat audio ko‘rinib qoladi.
     ydl_opts = build_ydl_base(outtmpl="%(title)s.%(ext)s", workdir=tempfile.gettempdir())
-    # In debug mode, propagate the actual YouTube/provider error instead of
-    # returning an empty format list with no explanation.
-    ydl_opts["ignore_no_formats_error"] = os.getenv("YTDLP_DEBUG_FORMATS", "0") != "1"
+    # Never silently turn a YouTube extraction failure into an empty list.
+    # The caller can then use its normal retry/fallback path. Debug logging must
+    # not alter the formats returned by yt-dlp.
+    ydl_opts["ignore_no_formats_error"] = False
     ydl_opts["skip_download"] = True
     # This must match build_ydl_base(): mweb receives a fresh PO Token from the
     # local bgutil provider, allowing DASH formats to be returned.
