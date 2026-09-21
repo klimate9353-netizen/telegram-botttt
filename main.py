@@ -1481,18 +1481,19 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
     if cookiefile:
         opts["cookiefile"] = cookiefile
 
-    # YouTube extractor: ba'zan mobile client yumshoqroq ishlaydi
+    # Let yt-dlp choose the supported YouTube clients.  Forcing web/android/ios
+    # makes YouTube return only the 360p fallback on many datacenter IPs because
+    # those clients require a per-video PO Token for DASH formats.
     opts.setdefault("extractor_args", {})
     opts["extractor_args"].setdefault("youtube", {})
-    # YouTube extractor: datacenter IP'ларда "web" client ko'pincha SABR/PO token sabab URL bermaydi.
-    # Shuning uchun default: android -> ios -> web. Istasangiz env билан бошқарасиз:
-    #   YTDLP_YT_CLIENTS=android,ios,web  (ёки: android)
     clients_env = (os.getenv("YTDLP_YT_CLIENTS") or "").strip()
-    if clients_env:
-        clients = [c.strip() for c in re.split(r"[,\s]+", clients_env) if c.strip()]
-    else:
-        clients = ["android", "ios", "web"]
-    opts["extractor_args"]["youtube"].setdefault("player_client", clients)
+    clients = ["default"]
+    if clients_env and clients_env.lower() not in ("default",):
+        log.warning(
+            "YTDLP_YT_CLIENTS=%s ignored: using yt-dlp default clients to keep DASH formats available",
+            clients_env,
+        )
+    opts["extractor_args"]["youtube"]["player_client"] = clients
     # HLS (m3u8) manifestlari баъзи тармоқларда manifest.googlevideo.com timeout бериши мумкин.
     # Шунинг учун (default) HLS'ни ўчириб, DASH форматлар билан ишлаймиз.
     # Ўчириб қўйиш: YTDLP_SKIP_HLS=0
@@ -1606,16 +1607,18 @@ def _extract_info(url: str) -> Dict[str, Any]:
     ydl_opts = build_ydl_base(outtmpl="%(title)s.%(ext)s", workdir=tempfile.gettempdir())
     ydl_opts["ignore_no_formats_error"] = True
     ydl_opts["skip_download"] = True
-    # Format ro'yxatini olishda "web" client ko'proq formatlarni qaytaradi.
+    # This must match build_ydl_base(): a forced web/android/ios client list can
+    # hide DASH formats and leave only the 360p progressive fallback.
     try:
         ydl_opts.setdefault("extractor_args", {})
         ydl_opts["extractor_args"].setdefault("youtube", {})
         clients_env = (os.getenv("YTDLP_YT_CLIENTS") or "").strip()
-        if clients_env:
-            clients = [c.strip() for c in re.split(r"[,\s]+", clients_env) if c.strip()]
-        else:
-            clients = ["android", "ios", "web"]
-        ydl_opts["extractor_args"]["youtube"]["player_client"] = clients
+        if clients_env and clients_env.lower() not in ("default",):
+            log.warning(
+                "YTDLP_YT_CLIENTS=%s ignored while extracting formats; using yt-dlp defaults",
+                clients_env,
+            )
+        ydl_opts["extractor_args"]["youtube"]["player_client"] = ["default"]
     except Exception:
         pass
     try:
