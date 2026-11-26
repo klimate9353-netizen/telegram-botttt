@@ -1486,7 +1486,7 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
     opts.setdefault("extractor_args", {})
     opts["extractor_args"].setdefault("youtube", {})
     clients_env = (os.getenv("YTDLP_YT_CLIENTS") or "").strip()
-    clients = ["mweb"]
+    clients = ["mweb", "tv", "web_safari"]
     if clients_env and clients_env.lower() not in ("mweb",):
         log.warning(
             "YTDLP_YT_CLIENTS=%s ignored: using mweb with the PO Token provider",
@@ -1622,7 +1622,7 @@ def _extract_info(url: str) -> Dict[str, Any]:
                 "YTDLP_YT_CLIENTS=%s ignored while extracting formats; using mweb with the PO Token provider",
                 clients_env,
             )
-        ydl_opts["extractor_args"]["youtube"]["player_client"] = ["mweb"]
+        ydl_opts["extractor_args"]["youtube"]["player_client"] = ["mweb", "tv", "web_safari"]
         pot_base_url = (os.getenv("BGUTIL_POT_BASE_URL") or "http://127.0.0.1:4416").strip()
         ydl_opts["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [pot_base_url]}
     except Exception:
