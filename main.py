@@ -1627,6 +1627,13 @@ def _extract_info(url: str) -> Dict[str, Any]:
     # not alter the formats returned by yt-dlp.
     ydl_opts["ignore_no_formats_error"] = False
     ydl_opts["skip_download"] = True
+    # When format diagnostics are enabled, request yt-dlp's verbose extractor
+    # trace as well. This shows whether bgutil is actually supplying the GVS
+    # PO Token for each selected YouTube client and why formats are omitted.
+    if os.getenv("YTDLP_DEBUG_FORMATS", "0") == "1":
+        ydl_opts["verbose"] = True
+        ydl_opts["quiet"] = False
+        ydl_opts["no_warnings"] = False
     # build_ydl_base() already configures both YouTube clients and the local
     # bgutil PO Token provider. Do not override that configuration here;
     # otherwise format extraction would silently fall back to mweb only.
