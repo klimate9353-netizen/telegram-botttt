@@ -936,7 +936,18 @@ def _yt_height(fmt: Dict[str, Any]) -> int:
 
     Returns 0 if unknown.
     """
-    # 1) Direct numeric fields (most reliable)
+    # YouTube's format_note is the displayed quality (e.g. 360p). Prefer it
+    # before raw pixel height because portrait videos can be 360x640 while
+    # YouTube still labels that stream as 360p.
+    note = str(fmt.get("format_note") or "")
+    note_match = re.search(r"(?i)(?<!\d)(\d{3,4})p(?:\d{1,3})?(?!\d)", note)
+    if note_match:
+        try:
+            return int(note_match.group(1))
+        except Exception:
+            pass
+
+    # 1) Direct numeric fields (fallback when format_note has no quality label)
     try:
         h = int(fmt.get("height") or 0)
         if h > 0:
@@ -1486,10 +1497,14 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
     opts.setdefault("extractor_args", {})
     opts["extractor_args"].setdefault("youtube", {})
     clients_env = (os.getenv("YTDLP_YT_CLIENTS") or "").strip()
-    clients = ["mweb", "tv", "web_safari"]
-    if clients_env and clients_env.lower() not in ("mweb",):
+    # mweb remains the primary client (with bgutil PO Token). web_safari is
+    # added as a complementary client because it can expose pre-merged HLS
+    # quality variants when the supplied YouTube cookies/session is trusted.
+    # Keep this list in sync for both format extraction and downloads.
+    clients = ["mweb", "web_safari"]
+    if clients_env and clients_env.lower() not in ("mweb,web_safari", "web_safari,mweb"):
         log.warning(
-            "YTDLP_YT_CLIENTS=%s ignored: using mweb with the PO Token provider",
+            "YTDLP_YT_CLIENTS=%s ignored: using mweb,web_safari with the PO Token provider",
             clients_env,
         )
     opts["extractor_args"]["youtube"]["player_client"] = clients
@@ -1590,10 +1605,11 @@ def build_ydl_base(outtmpl: str, workdir: Optional[str] = None) -> Dict[str, Any
             clients = yt.get("player_client")
             jsr = opts.get("js_runtimes") or {}
             log.info(
-                "YTDLP debug cfg: player_client=%s js_runtimes=%s remote_components=%s proxy=%s cookiefile=%s",
+                "YTDLP debug cfg: player_client=%s js_runtimes=%s remote_components=%s skip=%s proxy=%s cookiefile=%s",
                 clients,
                 list(jsr.keys()) if isinstance(jsr, dict) else jsr,
                 opts.get("remote_components"),
+                yt.get("skip"),
                 bool(opts.get("proxy")),
                 bool(opts.get("cookiefile")),
             )
@@ -1611,22 +1627,9 @@ def _extract_info(url: str) -> Dict[str, Any]:
     # not alter the formats returned by yt-dlp.
     ydl_opts["ignore_no_formats_error"] = False
     ydl_opts["skip_download"] = True
-    # This must match build_ydl_base(): mweb receives a fresh PO Token from the
-    # local bgutil provider, allowing DASH formats to be returned.
-    try:
-        ydl_opts.setdefault("extractor_args", {})
-        ydl_opts["extractor_args"].setdefault("youtube", {})
-        clients_env = (os.getenv("YTDLP_YT_CLIENTS") or "").strip()
-        if clients_env and clients_env.lower() not in ("mweb",):
-            log.warning(
-                "YTDLP_YT_CLIENTS=%s ignored while extracting formats; using mweb with the PO Token provider",
-                clients_env,
-            )
-        ydl_opts["extractor_args"]["youtube"]["player_client"] = ["mweb", "tv", "web_safari"]
-        pot_base_url = (os.getenv("BGUTIL_POT_BASE_URL") or "http://127.0.0.1:4416").strip()
-        ydl_opts["extractor_args"]["youtubepot-bgutilhttp"] = {"base_url": [pot_base_url]}
-    except Exception:
-        pass
+    # build_ydl_base() already configures both YouTube clients and the local
+    # bgutil PO Token provider. Do not override that configuration here;
+    # otherwise format extraction would silently fall back to mweb only.
     try:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
