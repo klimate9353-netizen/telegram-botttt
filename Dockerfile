@@ -35,7 +35,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
 
 # Local PO Token provider used by the bgutil yt-dlp plugin.  It is bound to
 # 127.0.0.1 at runtime and is never exposed outside this container.
-ARG BGUTIL_VERSION=2.0.0
+ARG BGUTIL_VERSION=2.0.2
 RUN git clone --depth 1 --branch "${BGUTIL_VERSION}" \
         https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/bgutil \
     && cd /opt/bgutil/server \
